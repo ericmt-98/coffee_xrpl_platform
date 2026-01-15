@@ -1,0 +1,22 @@
+# Coffee XRPL Payment Platform - Requirements
+
+# Core Dependencies
+PySide6>=6.6.0
+SQLAlchemy>=2.0.0
+argon2-cffi>=23.1.0
+cryptography>=41.0.0
+xrpl-py>=2.5.0
+
+# XML Generation
+lxml>=4.9.0
+Jinja2>=3.1.0
+
+# Utilities
+python-dotenv>=1.0.0
+openpyxl>=3.1.0  # Excel export
+Pillow>=10.0.0   # Image handling
+
+# Development
+pytest>=7.4.0
+pytest-qt>=4.2.0
+black>=23.0.0

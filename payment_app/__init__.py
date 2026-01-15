@@ -1,0 +1,3 @@
+"""
+Payment App package initialization
+"""

@@ -1,0 +1,36 @@
+# --- Python ---
+*.pyc
+__pycache__/
+.env
+.venv/
+venv/
+env/
+*.log
+.pytest_cache/
+.coverage
+htmlcov/
+dist/
+build/
+*.egg-info/
+
+# --- IDEs ---
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# --- Project Data & Secrets (CRITICAL) ---
+data/
+*.db
+*.sqlite
+*.sqlite3
+
+# --- Test Artifacts ---
+*.xlsx
+*.xml
+*.png
+*.jpg
+*.jpeg
+!producer_images/README.md  # Allow documentation if exists
