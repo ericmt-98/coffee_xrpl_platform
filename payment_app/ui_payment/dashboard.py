@@ -115,14 +115,6 @@ class PaymentDashboard(QMainWindow):
         """Handle payment completion"""
         self.history_widget.load_history()
         self.update_status(f"Pago completado - UETR: {payment.uetr}")
-        
-        # Show success notification
-        QMessageBox.information(
-            self,
-            "Pago Registrado",
-            f"El pago ha sido registrado exitosamente.\n\n"
-            f"Puede ver los detalles en el historial."
-        )
     
     def update_status(self, message: str):
         """Update status bar message"""
@@ -140,6 +132,19 @@ class PaymentDashboard(QMainWindow):
         )
         
         if reply == QMessageBox.Yes:
+            try:
+                from core.database import get_session, close_session
+                from core.audit import log_audit
+                audit_session = get_session()
+                try:
+                    log_audit(audit_session, self.operator.id, "Cierre de sesión de Pagos",
+                              f"Usuario: {self.operator.username}")
+                    audit_session.commit()
+                finally:
+                    close_session()
+            except Exception:
+                pass
+
             # Clear sensitive data
             self.xrpl_seed = None
             self.close()

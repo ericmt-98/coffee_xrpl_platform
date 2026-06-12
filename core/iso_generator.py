@@ -11,7 +11,7 @@ NOT for production banking use.
 """
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, Any
 from lxml import etree
 
@@ -27,14 +27,14 @@ class ISO20022Generator:
     @staticmethod
     def generate_end_to_end_id(prefix: str = "E2E") -> str:
         """Generate an End-to-End ID"""
-        timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
         return f"{prefix}{timestamp}{uuid.uuid4().hex[:8].upper()}"
     
     @staticmethod
     def format_datetime(dt: datetime = None) -> str:
         """Format datetime for ISO 20022 (ISO 8601)"""
         if dt is None:
-            dt = datetime.utcnow()
+            dt = datetime.now(timezone.utc)
         return dt.strftime("%Y-%m-%dT%H:%M:%S")
     
     def generate_pacs008(self, payment_data: Dict[str, Any]) -> str:
@@ -59,7 +59,6 @@ class ISO20022Generator:
         # Create root element
         root = etree.Element(
             "Document",
-            xmlns="urn:iso:std:iso:20022:tech:xsd:pacs.008.001.08",
             nsmap={None: "urn:iso:std:iso:20022:tech:xsd:pacs.008.001.08"}
         )
         
@@ -150,7 +149,6 @@ class ISO20022Generator:
         """
         root = etree.Element(
             "Document",
-            xmlns="urn:iso:std:iso:20022:tech:xsd:camt.054.001.08",
             nsmap={None: "urn:iso:std:iso:20022:tech:xsd:camt.054.001.08"}
         )
         
@@ -218,7 +216,6 @@ class ISO20022Generator:
         """
         root = etree.Element(
             "Document",
-            xmlns="urn:iso:std:iso:20022:tech:xsd:camt.053.001.08",
             nsmap={None: "urn:iso:std:iso:20022:tech:xsd:camt.053.001.08"}
         )
         
@@ -261,7 +258,7 @@ class ISO20022Generator:
         
         dt = etree.SubElement(bal, "Dt")
         dt_dt = etree.SubElement(dt, "Dt")
-        dt_dt.text = datetime.utcnow().strftime("%Y-%m-%d")
+        dt_dt.text = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         
         # Transactions
         transactions = statement_data.get('transactions', [])

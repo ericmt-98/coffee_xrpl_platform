@@ -16,7 +16,7 @@ from admin_app.ui_admin.user_management import UserManagementWidget
 from admin_app.ui_admin.audit_view import AuditViewWidget
 from core.database import get_session, close_session
 from core.models import User, UserRole, AuditLog
-from datetime import datetime
+from datetime import datetime, timezone
 
 
 class AdminDashboard(QMainWindow):
@@ -103,7 +103,7 @@ class AdminDashboard(QMainWindow):
                 user_id=self.admin_user.id,
                 action=action,
                 details=details,
-                timestamp=datetime.utcnow()
+                timestamp=datetime.now(timezone.utc)
             )
             session.add(log_entry)
             session.commit()

@@ -15,7 +15,7 @@ from admin_app.ui_admin.styles import ADMIN_STYLESHEET
 from core.database import get_session, close_session, database_exists, init_database
 from core.models import User, UserRole
 from core.security import hash_password, verify_password
-from datetime import datetime
+from datetime import datetime, timezone
 
 
 class LoginWindow(QDialog):
@@ -173,7 +173,7 @@ class LoginWindow(QDialog):
                 password_hash=hash_password(password),
                 role=UserRole.ADMIN,
                 full_name=name,
-                created_at=datetime.utcnow(),
+                created_at=datetime.now(timezone.utc),
                 is_active=True
             )
             
@@ -202,11 +202,11 @@ class LoginWindow(QDialog):
             close_session()
     
     def login(self):
-        """Handle login"""
+        """Handle login with brute-force lockout protection."""
         try:
             username = self.username_input.text().strip()
             password = self.password_input.text()
-            
+
             if not username or not password:
                 QMessageBox.warning(
                     self,
@@ -214,15 +214,14 @@ class LoginWindow(QDialog):
                     "Por favor, ingrese usuario y contraseña."
                 )
                 return
-            
-            # Verify credentials
+
             session = get_session()
             user = session.query(User).filter_by(
                 username=username,
                 role=UserRole.ADMIN,
                 is_active=True
             ).first()
-            
+
             if not user:
                 QMessageBox.warning(
                     self,
@@ -230,19 +229,62 @@ class LoginWindow(QDialog):
                     "Usuario o contraseña incorrectos."
                 )
                 return
-            
+
+            # Check lockout
+            now = datetime.now(timezone.utc)
+            locked_until = user.locked_until
+            if locked_until:
+                # Make aware if naive (SQLite may return naive datetime)
+                if locked_until.tzinfo is None:
+                    locked_until = locked_until.replace(tzinfo=timezone.utc)
+                if locked_until > now:
+                    remaining = int((locked_until - now).total_seconds() / 60) + 1
+                    QMessageBox.warning(
+                        self,
+                        "Cuenta Bloqueada",
+                        f"Cuenta bloqueada temporalmente.\n\n"
+                        f"Intente en {remaining} minuto(s)."
+                    )
+                    return
+
             if not verify_password(user.password_hash, password):
-                QMessageBox.warning(
-                    self,
-                    "Error de Autenticación",
-                    "Usuario o contraseña incorrectos."
-                )
+                # Increment failed counter
+                user.failed_login_count = (user.failed_login_count or 0) + 1
+                if user.failed_login_count >= 5:
+                    from datetime import timedelta
+                    user.locked_until = now + timedelta(minutes=15)
+                    user.failed_login_count = 0
+                    from core.models import AuditLog
+                    audit = AuditLog(
+                        user_id=user.id,
+                        action="Cuenta bloqueada por intentos fallidos",
+                        details=f"Admin: {username}",
+                    )
+                    session.add(audit)
+                    session.commit()
+                    QMessageBox.warning(
+                        self,
+                        "Cuenta Bloqueada",
+                        "Demasiados intentos fallidos.\n\n"
+                        "Cuenta bloqueada por 15 minutos."
+                    )
+                else:
+                    session.commit()
+                    QMessageBox.warning(
+                        self,
+                        "Error de Autenticación",
+                        "Usuario o contraseña incorrectos."
+                    )
                 return
-            
-            # Authentication successful
+
+            # Successful login — reset counter
+            user.failed_login_count = 0
+            user.locked_until = None
+            session.commit()
+
             self.authenticated_user = user
             self.accept()
-            
+
         except Exception as e:
             QMessageBox.critical(
                 self,

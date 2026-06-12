@@ -88,9 +88,9 @@ class AuditViewWidget(QWidget):
         
         # Table
         self.audit_table = QTableWidget()
-        self.audit_table.setColumnCount(5)
+        self.audit_table.setColumnCount(4)
         self.audit_table.setHorizontalHeaderLabels([
-            "Fecha/Hora", "Usuario", "Acción", "Detalles", "IP"
+            "Fecha/Hora", "Usuario", "Acción", "Detalles"
         ])
         
         # Table settings
@@ -169,10 +169,6 @@ class AuditViewWidget(QWidget):
                 # Details
                 details = log.details or "—"
                 self.audit_table.setItem(row, 3, QTableWidgetItem(details))
-                
-                # IP
-                ip = log.ip_address or "—"
-                self.audit_table.setItem(row, 4, QTableWidgetItem(ip))
             
         except Exception as e:
             QMessageBox.critical(
@@ -207,19 +203,18 @@ class AuditViewWidget(QWidget):
             ws.title = "Auditoría"
             
             # Headers
-            headers = ["Fecha/Hora", "Usuario", "Acción", "Detalles", "IP"]
+            headers = ["Fecha/Hora", "Usuario", "Acción", "Detalles"]
             for col, header in enumerate(headers, 1):
                 cell = ws.cell(row=1, column=col, value=header)
                 cell.font = Font(bold=True)
                 cell.fill = PatternFill(start_color="0078D4", end_color="0078D4", fill_type="solid")
-            
+
             # Data
             for row, log in enumerate(logs, 2):
                 ws.cell(row=row, column=1, value=log.timestamp.strftime("%d/%m/%Y %H:%M:%S"))
                 ws.cell(row=row, column=2, value=log.user.full_name if log.user else "Sistema")
                 ws.cell(row=row, column=3, value=log.action)
                 ws.cell(row=row, column=4, value=log.details or "")
-                ws.cell(row=row, column=5, value=log.ip_address or "")
             
             # Save
             wb.save(file_path)
@@ -328,7 +323,8 @@ class AuditViewWidget(QWidget):
             
             # Export each message
             for msg in messages:
-                filename = f"{msg.message_type.value}_{msg.payment.uetr}.xml"
+                uetr = msg.payment.uetr if msg.payment else "no-payment"
+                filename = f"{msg.message_type.value}_{uetr}.xml"
                 file_path = os.path.join(dir_path, filename)
                 
                 with open(file_path, 'w', encoding='utf-8') as f:

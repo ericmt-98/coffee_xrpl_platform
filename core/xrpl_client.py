@@ -15,10 +15,21 @@ from xrpl.transaction import submit_and_wait
 from xrpl.models.amounts import IssuedCurrencyAmount
 from xrpl.utils import xrp_to_drops, drops_to_xrp
 from xrpl.account import get_balance
+from xrpl.core.addresscodec import is_valid_classic_address
 from decimal import Decimal
 
 # XRPL Testnet endpoint
 TESTNET_URL = "https://s.altnet.rippletest.net:51234"
+
+
+def validate_xrpl_address(address: str) -> bool:
+    """Validate an XRPL address using cryptographic checksum verification."""
+    if not address:
+        return False
+    try:
+        return is_valid_classic_address(address)
+    except Exception:
+        return False
 
 
 class XRPLClient:
@@ -30,15 +41,14 @@ class XRPLClient:
     def validate_address(self, address: str) -> bool:
         """
         Validate an XRPL address format.
-        
+
         Args:
             address: XRPL address to validate
-            
+
         Returns:
             True if valid format
         """
-        # XRPL addresses start with 'r' and are typically 25-35 characters
-        return address.startswith('r') and 25 <= len(address) <= 35
+        return validate_xrpl_address(address)
     
     def get_wallet_from_seed(self, seed: str) -> Wallet:
         """

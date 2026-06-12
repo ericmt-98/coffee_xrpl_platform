@@ -97,6 +97,7 @@ class HistoryViewWidget(QWidget):
                 # Timestamp
                 timestamp_str = format_datetime_display(payment.timestamp)
                 self.payment_table.setItem(row, 0, QTableWidgetItem(timestamp_str))
+                self.payment_table.item(row, 0).setData(Qt.UserRole, payment.id)
                 
                 # Producer
                 self.payment_table.setItem(row, 1, QTableWidgetItem(payment.producer.name))
@@ -159,47 +160,46 @@ class HistoryViewWidget(QWidget):
         """Show detailed payment information"""
         try:
             row = index.row()
+            payment_id = self.payment_table.item(row, 0).data(Qt.UserRole)
+            if not payment_id:
+                return
             session = get_session()
-            
-            payments = session.query(Payment).filter_by(
-                operator_id=self.operator.id
-            ).order_by(Payment.timestamp.desc()).all()
-            
-            if row < len(payments):
-                payment = payments[row]
-                
-                details = (
-                    f"Detalles del Pago\n"
-                    f"{'=' * 50}\n\n"
-                    f"UETR: {payment.uetr}\n"
-                    f"Hash XRPL: {payment.xrpl_tx_hash}\n"
-                    f"Fecha: {format_datetime_display(payment.timestamp)}\n\n"
-                    f"Productor: {payment.producer.name}\n"
-                    f"Dirección XRPL: {payment.producer.xrpl_address}\n\n"
-                )
-                
-                if payment.delivery:
-                    details += (
-                        f"Peso: {payment.delivery.weight_kg:.2f} kg\n"
-                        f"Precio/kg: {format_currency(payment.delivery.price_per_kg, 'MXN')}\n"
-                        f"Total MXN: {format_currency(payment.delivery.total_mxn, 'MXN')}\n\n"
-                    )
-                
+            payment = session.query(Payment).filter_by(id=payment_id).first()
+            if not payment:
+                return
+
+            details = (
+                f"Detalles del Pago\n"
+                f"{'=' * 50}\n\n"
+                f"UETR: {payment.uetr}\n"
+                f"Hash XRPL: {payment.xrpl_tx_hash}\n"
+                f"Fecha: {format_datetime_display(payment.timestamp)}\n\n"
+                f"Productor: {payment.producer.name}\n"
+                f"Dirección XRPL: {payment.producer.xrpl_address}\n\n"
+            )
+
+            if payment.delivery:
                 details += (
-                    f"Token: {payment.amount:.6f} {payment.currency}\n"
-                    f"Estado: {payment.status.value.capitalize()}\n"
+                    f"Peso: {payment.delivery.weight_kg:.2f} kg\n"
+                    f"Precio/kg: {format_currency(payment.delivery.price_per_kg, 'MXN')}\n"
+                    f"Total MXN: {format_currency(payment.delivery.total_mxn, 'MXN')}\n\n"
                 )
-                
-                if payment.notes:
-                    details += f"\nNotas: {payment.notes}\n"
-                
-                # Add ISO messages info
-                if payment.iso_messages:
-                    details += f"\nMensajes ISO 20022: {len(payment.iso_messages)}\n"
-                    for msg in payment.iso_messages:
-                        details += f"- {msg.message_type.value}\n"
-                
-                QMessageBox.information(self, "Detalles del Pago", details)
+
+            details += (
+                f"Token: {payment.amount:.6f} {payment.currency}\n"
+                f"Estado: {payment.status.value.capitalize()}\n"
+            )
+
+            if payment.notes:
+                details += f"\nNotas: {payment.notes}\n"
+
+            # Add ISO messages info
+            if payment.iso_messages:
+                details += f"\nMensajes ISO 20022: {len(payment.iso_messages)}\n"
+                for msg in payment.iso_messages:
+                    details += f"- {msg.message_type.value}\n"
+
+            QMessageBox.information(self, "Detalles del Pago", details)
                 
         except Exception as e:
             QMessageBox.critical(

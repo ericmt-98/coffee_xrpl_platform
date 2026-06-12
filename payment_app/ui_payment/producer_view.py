@@ -14,7 +14,7 @@ from PySide6.QtGui import QPixmap
 
 from core.database import get_session, close_session
 from core.models import Producer
-from datetime import datetime
+from datetime import datetime, timezone
 import shutil
 import os
 
@@ -259,11 +259,12 @@ class ProducerManagementWidget(QWidget):
                 )
                 return
             
-            if not xrpl.startswith('r') or len(xrpl) < 25:
+            from core.xrpl_client import validate_xrpl_address
+            if not validate_xrpl_address(xrpl):
                 QMessageBox.warning(
                     self,
                     "Dirección Inválida",
-                    "La dirección XRPL no tiene un formato válido."
+                    "La dirección XRPL no es válida. Verifique el checksum."
                 )
                 return
             
@@ -298,13 +299,18 @@ class ProducerManagementWidget(QWidget):
                 xrpl_address=xrpl,
                 contact_info=contact if contact else None,
                 id_image_path=image_path,
-                created_at=datetime.utcnow(),
+                created_at=datetime.now(timezone.utc),
                 is_active=True
             )
             
             session.add(new_producer)
             session.commit()
-            
+
+            from core.audit import log_audit
+            log_audit(session, None, "Productor creado",
+                      f"Nombre: {name} | XRPL: {xrpl}")
+            session.commit()
+
             QMessageBox.information(
                 self,
                 "Productor Creado",
