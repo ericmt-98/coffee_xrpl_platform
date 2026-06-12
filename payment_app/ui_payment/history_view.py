@@ -7,9 +7,10 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QTableWidget,
     QTableWidgetItem, QMessageBox, QGroupBox,
-    QFileDialog, QHeaderView, QAbstractItemView
+    QFileDialog, QHeaderView, QAbstractItemView,
+    QDateEdit, QComboBox
 )
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QDate
 from PySide6.QtGui import QColor
 
 from core.database import get_session, close_session
@@ -55,7 +56,11 @@ class HistoryViewWidget(QWidget):
         header_layout.addWidget(export_btn)
         
         layout.addLayout(header_layout)
-        
+
+        # Filters
+        self.filter_group = self.create_filters()
+        layout.addWidget(self.filter_group)
+
         # Payment table
         self.payment_table = QTableWidget()
         self.payment_table.setColumnCount(7)
@@ -78,15 +83,78 @@ class HistoryViewWidget(QWidget):
         self.summary_label.setStyleSheet("font-size: 10pt; color: #605E5C; padding: 10px;")
         layout.addWidget(self.summary_label)
     
+    def create_filters(self) -> QGroupBox:
+        """Create date/producer/status filter bar"""
+        group = QGroupBox("Filtros")
+        layout = QHBoxLayout()
+
+        layout.addWidget(QLabel("Desde:"))
+        self.filter_date_from = QDateEdit()
+        self.filter_date_from.setCalendarPopup(True)
+        self.filter_date_from.setDate(QDate.currentDate().addMonths(-1))
+        self.filter_date_from.setDisplayFormat("dd/MM/yyyy")
+        layout.addWidget(self.filter_date_from)
+
+        layout.addWidget(QLabel("Hasta:"))
+        self.filter_date_to = QDateEdit()
+        self.filter_date_to.setCalendarPopup(True)
+        self.filter_date_to.setDate(QDate.currentDate())
+        self.filter_date_to.setDisplayFormat("dd/MM/yyyy")
+        layout.addWidget(self.filter_date_to)
+
+        layout.addWidget(QLabel("Estado:"))
+        self.filter_status = QComboBox()
+        self.filter_status.addItems(["Todos", "Completado", "Simulado", "Pendiente", "Fallido"])
+        layout.addWidget(self.filter_status)
+
+        layout.addStretch()
+
+        apply_btn = QPushButton("Aplicar")
+        apply_btn.clicked.connect(self.load_history)
+        layout.addWidget(apply_btn)
+
+        group.setLayout(layout)
+        return group
+
+    def _build_filtered_query(self, session):
+        """Build a Payment query applying the active date/status filters."""
+        from datetime import datetime as dt
+        from core.models import PaymentStatus
+
+        query = session.query(Payment).filter_by(operator_id=self.operator.id)
+
+        # Date filters
+        date_from = self.filter_date_from.date().toPython()
+        date_to = self.filter_date_to.date().toPython()
+        datetime_from = dt.combine(date_from, dt.min.time())
+        datetime_to = dt.combine(date_to, dt.max.time())
+        query = query.filter(
+            Payment.timestamp >= datetime_from,
+            Payment.timestamp <= datetime_to
+        )
+
+        # Status filter
+        status_text = self.filter_status.currentText()
+        status_map = {
+            "Completado": PaymentStatus.COMPLETED,
+            "Simulado": PaymentStatus.SIMULATED,
+            "Pendiente": PaymentStatus.PENDING,
+            "Fallido": PaymentStatus.FAILED,
+        }
+        if status_text in status_map:
+            query = query.filter(Payment.status == status_map[status_text])
+
+        return query
+
     def load_history(self):
         """Load payment history"""
         try:
             session = get_session()
-            
-            # Get payments for this operator
-            payments = session.query(Payment).filter_by(
-                operator_id=self.operator.id
-            ).order_by(Payment.timestamp.desc()).all()
+
+            # Get payments for this operator, applying active filters
+            payments = self._build_filtered_query(session).order_by(
+                Payment.timestamp.desc()
+            ).all()
             
             self.payment_table.setRowCount(len(payments))
             
@@ -224,11 +292,11 @@ class HistoryViewWidget(QWidget):
             if not file_path:
                 return
             
-            # Get data
+            # Get data (respects active filters)
             session = get_session()
-            payments = session.query(Payment).filter_by(
-                operator_id=self.operator.id
-            ).order_by(Payment.timestamp.desc()).all()
+            payments = self._build_filtered_query(session).order_by(
+                Payment.timestamp.desc()
+            ).all()
             
             # Create workbook
             wb = openpyxl.Workbook()

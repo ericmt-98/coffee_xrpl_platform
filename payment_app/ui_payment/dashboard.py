@@ -14,6 +14,7 @@ from payment_app.ui_payment.producer_view import ProducerManagementWidget
 from payment_app.ui_payment.payment_flow import PaymentFlowWidget
 from payment_app.ui_payment.history_view import HistoryViewWidget
 from core.models import User
+from core.xrpl_client import XRPLClient
 
 
 class PaymentDashboard(QMainWindow):
@@ -23,6 +24,7 @@ class PaymentDashboard(QMainWindow):
         super().__init__()
         self.operator = operator
         self.xrpl_seed = xrpl_seed  # Stored in RAM only
+        self._xrpl_client = XRPLClient()
         self.init_ui()
     
     def init_ui(self):
@@ -80,6 +82,12 @@ class PaymentDashboard(QMainWindow):
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
         self.update_status("Listo")
+
+        # Load initial balance (best-effort, non-blocking via cursor)
+        try:
+            self.refresh_balance()
+        except Exception:
+            pass
     
     def create_header(self) -> QHBoxLayout:
         """Create the header section"""
@@ -96,7 +104,20 @@ class PaymentDashboard(QMainWindow):
         user_label = QLabel(f"👤 {self.operator.full_name}")
         user_label.setStyleSheet("font-size: 11pt; font-weight: 600;")
         layout.addWidget(user_label)
-        
+
+        # Balance label
+        self.balance_label = QLabel("💧 Saldo: --")
+        self.balance_label.setStyleSheet("font-size: 10pt; color: #0078D4;")
+        layout.addWidget(self.balance_label)
+
+        # Refresh balance button
+        refresh_balance_btn = QPushButton("🔄")
+        refresh_balance_btn.setProperty("class", "secondary")
+        refresh_balance_btn.setFixedWidth(40)
+        refresh_balance_btn.setToolTip("Actualizar saldo")
+        refresh_balance_btn.clicked.connect(self.refresh_balance)
+        layout.addWidget(refresh_balance_btn)
+
         # Logout button
         logout_btn = QPushButton("Cerrar Sesión")
         logout_btn.setProperty("class", "secondary")
@@ -105,6 +126,21 @@ class PaymentDashboard(QMainWindow):
         
         return layout
     
+    def refresh_balance(self):
+        """Fetch and display XRP balance for the operator's wallet."""
+        if not self.operator.xrpl_address:
+            return
+        try:
+            from PySide6.QtWidgets import QApplication
+            QApplication.setOverrideCursor(Qt.WaitCursor)
+            balance_info = self._xrpl_client.get_balance(self.operator.xrpl_address)
+            xrp = balance_info.get('xrp', 0)
+            self.balance_label.setText(f"💧 Saldo: {xrp:.6f} XRP")
+        except Exception as e:
+            self.balance_label.setText("💧 Saldo: error")
+        finally:
+            QApplication.restoreOverrideCursor()
+
     def on_producer_selected(self, producer):
         """Handle producer selection"""
         self.payment_widget.set_producer(producer)
@@ -115,6 +151,7 @@ class PaymentDashboard(QMainWindow):
         """Handle payment completion"""
         self.history_widget.load_history()
         self.update_status(f"Pago completado - UETR: {payment.uetr}")
+        self.refresh_balance()
     
     def update_status(self, message: str):
         """Update status bar message"""

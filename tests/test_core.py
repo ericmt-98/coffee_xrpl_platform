@@ -106,3 +106,49 @@ def test_generate_camt054_parseable(sample_payment_data):
     xml_str = gen.generate_camt054(sample_payment_data)
     root = etree.fromstring(xml_str.encode("utf-8"))
     assert root is not None
+
+
+# ── iso_generator phase 3 ─────────────────────────────────────────────────────
+
+def test_format_iso_amount():
+    from core.iso_generator import ISO20022Generator
+    gen = ISO20022Generator()
+    assert gen.format_iso_amount(0.123456) == "0.123456"
+    assert gen.format_iso_amount(100) == "100"
+    assert gen.format_iso_amount(10.5) == "10.5"
+    # No scientific notation
+    assert "E" not in gen.format_iso_amount(0.000001)
+    assert "e" not in gen.format_iso_amount(0.000001)
+
+
+def test_generate_pacs002_acsc(sample_payment_data):
+    from core.iso_generator import ISO20022Generator
+    gen = ISO20022Generator()
+    xml_str = gen.generate_pacs002(sample_payment_data, "tesSUCCESS")
+    root = etree.fromstring(xml_str.encode("utf-8"))
+    assert root is not None
+    ns = "urn:iso:std:iso:20022:tech:xsd:pacs.002.001.10"
+    tx_sts = root.find(f".//{{{ns}}}TxSts")
+    assert tx_sts is not None and tx_sts.text == "ACSC"
+
+
+def test_generate_pacs002_rjct(sample_payment_data):
+    from core.iso_generator import ISO20022Generator
+    gen = ISO20022Generator()
+    xml_str = gen.generate_pacs002(sample_payment_data, "tecUNFUNDED_PAYMENT")
+    root = etree.fromstring(xml_str.encode("utf-8"))
+    ns = "urn:iso:std:iso:20022:tech:xsd:pacs.002.001.10"
+    tx_sts = root.find(f".//{{{ns}}}TxSts")
+    assert tx_sts is not None and tx_sts.text == "RJCT"
+    prtry = root.find(f".//{{{ns}}}Prtry")
+    assert prtry is not None and prtry.text == "tecUNFUNDED_PAYMENT"
+
+
+def test_generate_pacs002_pdng(sample_payment_data):
+    from core.iso_generator import ISO20022Generator
+    gen = ISO20022Generator()
+    xml_str = gen.generate_pacs002(sample_payment_data, "???")
+    root = etree.fromstring(xml_str.encode("utf-8"))
+    ns = "urn:iso:std:iso:20022:tech:xsd:pacs.002.001.10"
+    tx_sts = root.find(f".//{{{ns}}}TxSts")
+    assert tx_sts is not None and tx_sts.text == "PDNG"

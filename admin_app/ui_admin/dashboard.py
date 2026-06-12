@@ -238,5 +238,10 @@ class AdminDashboard(QMainWindow):
     
     def closeEvent(self, event):
         """Handle window close event"""
+        try:
+            from core.database import backup_database
+            backup_database()
+        except Exception:
+            pass
         close_session()
         event.accept()
