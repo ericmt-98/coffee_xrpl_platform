@@ -6,16 +6,17 @@ Handles weight measurement, calculation, and XRPL payment execution
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFormLayout,
     QLabel, QDoubleSpinBox, QPushButton, QMessageBox,
-    QGroupBox, QComboBox, QTextEdit, QProgressDialog
+    QGroupBox, QComboBox, QTextEdit, QProgressDialog,
+    QRadioButton, QButtonGroup
 )
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont
 
 from core.database import get_session, close_session
-from core.models import Producer, User, Payment, Delivery, IsoMessage, PaymentStatus, MessageType
-from core.xrpl_client import XRPLClient, convert_mxn_to_token
+from core.models import Producer, User, Payment, Delivery, IsoMessage, PaymentStatus, MessageType, EscrowDetail
+from core.xrpl_client import XRPLClient, convert_mxn_to_token, MOCK_EXCHANGE_RATES
 from core.iso_generator import ISO20022Generator
-from core.utils import format_currency, calculate_payment_total
+from core.utils import format_currency, calculate_payment_total, log_audit
 from datetime import datetime, timezone
 
 
@@ -116,14 +117,45 @@ class PaymentFlowWidget(QWidget):
         self.currency_combo = QComboBox()
         self.currency_combo.addItems(["XRP", "USDC (Simulado)", "RLUSD (Simulado)", "MXN Token (Simulado)"])
         self.currency_combo.currentTextChanged.connect(self.update_token_amount)
+        self.currency_combo.currentTextChanged.connect(self._on_mode_changed)
         currency_layout.addRow("Token a Enviar:", self.currency_combo)
-        
+
         # Token amount display
         self.token_amount_label = QLabel("0.00 XRP")
         self.token_amount_label.setStyleSheet("font-size: 14pt; font-weight: 600; color: #0078D4;")
         currency_layout.addRow("Cantidad en Token:", self.token_amount_label)
-        
+
+        self.rate_caption = QLabel("")
+        self.rate_caption.setStyleSheet("font-size: 8pt; color: #605E5C;")
+        currency_layout.addRow("", self.rate_caption)
+
         layout.addLayout(currency_layout)
+
+        # Modo de pago: directo vs escrow
+        self.mode_group = QButtonGroup(self)
+        self.direct_radio = QRadioButton("Pago directo")
+        self.escrow_radio = QRadioButton("Pago contra calidad (Escrow)")
+        self.direct_radio.setChecked(True)
+        self.mode_group.addButton(self.direct_radio)
+        self.mode_group.addButton(self.escrow_radio)
+        self.direct_radio.toggled.connect(self._on_mode_changed)
+
+        mode_layout = QHBoxLayout()
+        mode_layout.addWidget(self.direct_radio)
+        mode_layout.addWidget(self.escrow_radio)
+        mode_layout.addStretch()
+        layout.addLayout(mode_layout)
+
+        # Ventana de calidad (visible solo en modo escrow)
+        escrow_options_layout = QFormLayout()
+        self.quality_window_label = QLabel("Ventana de calidad:")
+        self.quality_window_combo = QComboBox()
+        self.quality_window_combo.addItems(["24 horas", "48 horas", "72 horas", "7 días"])
+        self.quality_window_combo.setCurrentIndex(1)  # default 48h
+        self.quality_window_combo.setVisible(False)
+        self.quality_window_label.setVisible(False)
+        escrow_options_layout.addRow(self.quality_window_label, self.quality_window_combo)
+        layout.addLayout(escrow_options_layout)
         
         # Warning
         warning = QLabel(
@@ -151,6 +183,22 @@ class PaymentFlowWidget(QWidget):
         self.pay_button.setEnabled(
             self.weight_input.value() > 0 and self.current_producer is not None
         )
+
+    def _on_mode_changed(self):
+        """Show/hide escrow options and enforce XRP-only restriction for escrow mode."""
+        is_xrp = self.currency_combo.currentText().split()[0] == "XRP"
+
+        # Escrow solo disponible para XRP
+        self.escrow_radio.setEnabled(is_xrp)
+        if not is_xrp:
+            self.direct_radio.setChecked(True)
+            self.escrow_radio.setToolTip("Escrow disponible solo para XRP")
+        else:
+            self.escrow_radio.setToolTip("")
+
+        is_escrow = self.escrow_radio.isChecked()
+        self.quality_window_combo.setVisible(is_escrow)
+        self.quality_window_label.setVisible(is_escrow)
 
     def clear_layout(self, layout):
         """Recursively clear all widgets and sub-layouts from a layout"""
@@ -200,7 +248,7 @@ class PaymentFlowWidget(QWidget):
             from core.models import DailyPrice
             from datetime import date
             session = get_session()
-            today = datetime.now(timezone.utc).date()
+            today = datetime.now().date()
             today_dt = datetime.combine(today, datetime.min.time())
             daily = session.query(DailyPrice).filter_by(price_date=today_dt).first()
             if daily:
@@ -233,26 +281,31 @@ class PaymentFlowWidget(QWidget):
         try:
             token_amount = convert_mxn_to_token(total_mxn, currency)
             self.token_amount_label.setText(f"{token_amount:.6f} {currency}")
+            rate = MOCK_EXCHANGE_RATES.get(f"{currency}_MXN")
+            if rate:
+                self.rate_caption.setText(f"Tasa fija educativa: 1 {currency} = ${rate:.2f} MXN")
+            else:
+                self.rate_caption.setText("")
         except (ValueError, KeyError) as e:
             self.token_amount_label.setText(f"Error: {e}")
+            self.rate_caption.setText("")
     
     def execute_payment(self):
-        """Execute XRPL payment and generate ISO messages"""
+        """Execute XRPL payment — validate + confirm in UI thread, send in background."""
         if not self.current_producer:
             QMessageBox.warning(self, "Error", "No hay productor seleccionado.")
             return
-        
+
         weight = self.weight_input.value()
         if weight <= 0:
             QMessageBox.warning(self, "Error", "El peso debe ser mayor a 0.")
             return
-        
-        # Confirm payment
-        total_mxn = self.weight_input.value() * self.price_input.value()
+
+        total_mxn = weight * self.price_input.value()
         currency_text = self.currency_combo.currentText()
         currency = currency_text.split()[0]
         token_amount = convert_mxn_to_token(total_mxn, currency)
-        
+
         reply = QMessageBox.question(
             self,
             "Confirmar Pago",
@@ -263,189 +316,302 @@ class PaymentFlowWidget(QWidget):
             f"Token: {token_amount:.6f} {currency}\n\n"
             f"Esta transacción se ejecutará en XRPL Testnet.",
             QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No
+            QMessageBox.No,
         )
-        
         if reply != QMessageBox.Yes:
             return
-        
-        # Show progress dialog
-        progress = QProgressDialog("Procesando pago...", None, 0, 4, self)
-        progress.setWindowModality(Qt.WindowModal)
-        progress.setMinimumDuration(0)
-        progress.setValue(0)
-        progress.setWindowTitle("Ejecutando Pago")
-        
-        try:
-            # Step 1: Generate UETR
-            progress.setLabelText("Generando identificadores...")
-            progress.setValue(1)
-            
-            uetr = self.iso_generator.generate_uetr()
-            end_to_end_id = self.iso_generator.generate_end_to_end_id()
-            
-            # Pre-flight balance check for XRP payments
-            if currency == "XRP":
-                try:
-                    balance_info = self.xrpl_client.get_balance(self.operator.xrpl_address)
-                    available_xrp = balance_info.get('xrp', 0)
-                    required = float(token_amount) + 1.0  # amount + base reserve margin
-                    if available_xrp < required:
-                        QMessageBox.critical(
-                            self,
-                            "Saldo Insuficiente",
-                            f"Saldo insuficiente en wallet.\n\n"
-                            f"Disponible: {available_xrp:.6f} XRP\n"
-                            f"Requerido: {required:.6f} XRP (monto + reserva base)\n\n"
-                            f"No se enviará la transacción."
-                        )
-                        return
-                except Exception:
-                    pass  # Balance check failure must not block — let XRPL reject if needed
 
-            # Step 2: Execute XRPL payment
-            progress.setLabelText("Enviando transacción XRPL...")
-            progress.setValue(2)
+        uetr = self.iso_generator.generate_uetr()
+        end_to_end_id = self.iso_generator.generate_end_to_end_id()
 
-            # Only XRP is actually sent; others are simulated
-            if currency == "XRP":
-                tx_result = self.xrpl_client.send_xrp_payment(
-                    sender_seed=self.xrpl_seed,
-                    destination=self.current_producer.xrpl_address,
-                    amount_xrp=token_amount,
-                    memo=f"Coffee Payment - UETR: {uetr}"
+        # Escrow branch — synchronous, has its own progress dialog
+        if self.escrow_radio.isChecked():
+            progress = QProgressDialog("Procesando escrow...", None, 0, 4, self)
+            progress.setWindowModality(Qt.WindowModal)
+            progress.setMinimumDuration(0)
+            progress.setValue(0)
+            progress.setWindowTitle("Creando Escrow")
+            try:
+                self._execute_escrow_payment(weight, total_mxn, token_amount, uetr, end_to_end_id, progress)
+            finally:
+                progress.close()
+            return
+
+        # Direct payment — background thread, non-blocking
+        self._progress = QProgressDialog("⏳ Conectando con XRPL Testnet...", None, 0, 0, self)
+        self._progress.setWindowModality(Qt.WindowModal)
+        self._progress.setMinimumDuration(0)
+        self._progress.setWindowTitle("Ejecutando Pago")
+        self._progress.show()
+
+        self.pay_button.setEnabled(False)
+        self.pay_button.setText("⏳ Procesando…")
+
+        from shared_ui.workers import FunctionWorker
+        self._payment_worker = FunctionWorker(
+            self._do_payment,
+            uetr, end_to_end_id, currency, token_amount, total_mxn,
+            self.current_producer.id, self.current_producer.name,
+            self.current_producer.xrpl_address,
+            self.operator.id, self.operator.full_name, self.operator.xrpl_address,
+            weight, self.price_input.value(),
+            self.notes_input.toPlainText(),
+            self.xrpl_seed,
+        )
+        self._payment_worker.finished_ok.connect(self._on_payment_ok)
+        self._payment_worker.failed.connect(self._on_payment_failed)
+        self._payment_worker.start()
+
+    def _do_payment(self, uetr, end_to_end_id, currency, token_amount, total_mxn,
+                    producer_id, producer_name, producer_address,
+                    operator_id, operator_name, operator_address,
+                    weight_kg, price_per_kg, notes, seed) -> dict:
+        """Background thread: XRPL network call + DB persistence. No Qt widgets accessed."""
+        from core.database import get_session as _gs, close_session as _cs
+        from core.models import Payment as _Pay, Delivery as _Del, IsoMessage as _Iso
+        from core.models import PaymentStatus as _PS, MessageType as _MT
+        from core.iso_generator import ISO20022Generator
+        from core.audit import log_audit as _log
+
+        iso_gen = ISO20022Generator()
+
+        if currency == "XRP":
+            balance_info = self.xrpl_client.get_balance(operator_address)
+            available_xrp = balance_info.get('xrp', 0)
+            required = float(token_amount) + 1.0
+            if available_xrp < required:
+                raise Exception(
+                    f"Saldo insuficiente.\n"
+                    f"Disponible: {available_xrp:.6f} XRP\n"
+                    f"Requerido: {required:.6f} XRP (monto + reserva base)"
                 )
-                
-                if not tx_result['validated']:
-                    raise Exception(f"Transaction failed: {tx_result['result']}")
-                
-                tx_hash = tx_result['hash']
-            else:
-                # Simulated payment for other tokens
-                tx_hash = f"SIMULATED_{currency}_{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
-            
-            # Step 3: Save to database
-            progress.setLabelText("Guardando registro...")
-            progress.setValue(3)
-            
-            session = get_session()
-            
-            # Create payment record
-            payment = Payment(
-                uetr=uetr,
-                xrpl_tx_hash=tx_hash,
-                amount=token_amount,
-                currency=currency,
-                amount_mxn=total_mxn,
-                producer_id=self.current_producer.id,
-                operator_id=self.operator.id,
+            tx_result = self.xrpl_client.send_xrp_payment(
+                sender_seed=seed,
+                destination=producer_address,
+                amount_xrp=token_amount,
+                memo=f"Coffee Payment - UETR: {uetr}",
+            )
+            if not tx_result['validated']:
+                raise Exception(f"Transaction failed: {tx_result['result']}")
+            tx_hash = tx_result['hash']
+        else:
+            tx_hash = f"SIMULATED_{currency}_{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
+
+        session = _gs()
+        try:
+            payment = _Pay(
+                uetr=uetr, xrpl_tx_hash=tx_hash,
+                amount=token_amount, currency=currency, amount_mxn=total_mxn,
+                producer_id=producer_id, operator_id=operator_id,
                 timestamp=datetime.now(timezone.utc),
-                status=PaymentStatus.COMPLETED if currency == "XRP" else PaymentStatus.SIMULATED,
-                notes=self.notes_input.toPlainText() or None
+                status=_PS.COMPLETED if currency == "XRP" else _PS.SIMULATED,
+                notes=notes or None,
             )
             session.add(payment)
-            session.flush()  # Get payment ID
-            
-            # Create delivery record
-            delivery = Delivery(
-                payment_id=payment.id,
-                weight_kg=weight,
-                price_per_kg=self.price_input.value(),
-                total_mxn=total_mxn,
-                delivery_date=datetime.now(timezone.utc),
-                notes=self.notes_input.toPlainText() or None
-            )
-            session.add(delivery)
-            
-            # Step 4: Generate ISO 20022 messages
-            progress.setLabelText("Generando mensajes ISO 20022...")
-            progress.setValue(4)
-            
-            payment_data = {
-                'uetr': uetr,
-                'end_to_end_id': end_to_end_id,
-                'amount': token_amount,
-                'currency': currency,
-                'debtor_name': self.operator.full_name,
-                'debtor_account': self.operator.xrpl_address,
-                'creditor_name': self.current_producer.name,
-                'creditor_account': self.current_producer.xrpl_address,
-                'xrpl_tx_hash': tx_hash
+            session.flush()
+
+            session.add(_Del(
+                payment_id=payment.id, weight_kg=weight_kg,
+                price_per_kg=price_per_kg, total_mxn=total_mxn,
+                delivery_date=datetime.now(timezone.utc), notes=notes or None,
+            ))
+
+            pd = {
+                'uetr': uetr, 'end_to_end_id': end_to_end_id,
+                'amount': token_amount, 'currency': currency,
+                'debtor_name': operator_name, 'debtor_account': operator_address,
+                'creditor_name': producer_name, 'creditor_account': producer_address,
+                'xrpl_tx_hash': tx_hash,
             }
-            
-            # Generate pacs.008
-            pacs008_xml = self.iso_generator.generate_pacs008(payment_data)
-            pacs008_msg = IsoMessage(
-                payment_id=payment.id,
-                message_type=MessageType.PACS_008,
-                xml_content=pacs008_xml,
-                created_at=datetime.now(timezone.utc)
-            )
-            session.add(pacs008_msg)
-            
-            # Generate camt.054
-            camt054_xml = self.iso_generator.generate_camt054(payment_data)
-            camt054_msg = IsoMessage(
-                payment_id=payment.id,
-                message_type=MessageType.CAMT_054,
-                xml_content=camt054_xml,
-                created_at=datetime.now(timezone.utc)
-            )
-            session.add(camt054_msg)
-            
+            session.add(_Iso(payment_id=payment.id, message_type=_MT.PACS_008,
+                             xml_content=iso_gen.generate_pacs008(pd)))
+            session.add(_Iso(payment_id=payment.id, message_type=_MT.CAMT_054,
+                             xml_content=iso_gen.generate_camt054(pd)))
             session.commit()
 
-            from core.audit import log_audit
-            log_audit(session, self.operator.id, "Pago ejecutado",
-                      f"UETR: {uetr} | Productor: {self.current_producer.name} | "
-                      f"Monto: {token_amount} {currency} | MXN: {total_mxn}")
+            _log(session, operator_id, "Pago ejecutado",
+                 f"UETR: {uetr} | Productor: {producer_name} | "
+                 f"Monto: {token_amount} {currency} | MXN: {total_mxn}")
             session.commit()
 
-            # Success message
-            explorer_url = self.xrpl_client.get_testnet_explorer_url(tx_hash) if currency == "XRP" else None
-            
-            success_msg = (
-                f"✓ Pago ejecutado exitosamente\n\n"
-                f"UETR: {uetr}\n"
-                f"Hash XRPL: {tx_hash}\n"
-                f"Monto: {token_amount:.6f} {currency}\n"
-                f"Equivalente: {format_currency(total_mxn, 'MXN')}\n\n"
-                f"Mensajes ISO 20022 generados:\n"
-                f"- pacs.008 (Credit Transfer)\n"
-                f"- camt.054 (Notification)"
-            )
-            
-            if explorer_url:
-                success_msg += f"\n\nVer en Explorer:\n{explorer_url}"
-            
-            QMessageBox.information(self, "Pago Exitoso", success_msg)
-            
-            # Emit signal
-            self.payment_completed.emit(payment)
-            
-            # Reset form
-            self.weight_input.setValue(0.01)
-            self.notes_input.clear()
-            
-        except Exception as e:
-            QMessageBox.critical(
-                self,
-                "Error en Pago",
-                f"Error al ejecutar pago:\n\n{str(e)}\n\n"
-                f"Por favor, verifique:\n"
-                f"- Saldo suficiente en wallet\n"
-                f"- Conexión a XRPL Testnet\n"
-                f"- Dirección XRPL del productor"
-            )
-            try:
-                from core.database import get_session as _gs, close_session as _cs
-                from core.audit import log_audit
-                _fail_session = _gs()
-                log_audit(_fail_session, self.operator.id, "Pago fallido", f"Error: {str(e)[:200]}")
-                _fail_session.commit()
-                _cs()
-            except Exception:
-                pass
+            explorer_url = (self.xrpl_client.get_testnet_explorer_url(tx_hash)
+                            if currency == "XRP" else None)
+            return {
+                'payment_id': payment.id, 'uetr': uetr, 'tx_hash': tx_hash,
+                'token_amount': token_amount, 'currency': currency,
+                'total_mxn': total_mxn, 'explorer_url': explorer_url,
+            }
         finally:
-            progress.close()
+            _cs()
+
+    def _on_payment_ok(self, result: dict):
+        """UI thread: payment finished successfully."""
+        self.pay_button.setEnabled(True)
+        self.pay_button.setText("💰 EJECUTAR PAGO")
+        if hasattr(self, '_progress'):
+            self._progress.close()
+
+        from payment_app.ui_payment.payment_result_dialog import PaymentResultDialog
+        PaymentResultDialog(result, parent=self).exec()
+
+        try:
+            from sqlalchemy.orm import make_transient
+            session = get_session()
+            payment = session.query(Payment).filter_by(id=result['payment_id']).first()
+            if payment:
+                session.expunge(payment)
+                make_transient(payment)
+                self.payment_completed.emit(payment)
+        except Exception:
+            pass
+        finally:
             close_session()
+
+        self.weight_input.setValue(0.01)
+        self.notes_input.clear()
+        self._update_pay_button_state()
+
+    def _on_payment_failed(self, error: str):
+        """UI thread: payment failed."""
+        self.pay_button.setEnabled(True)
+        self.pay_button.setText("💰 EJECUTAR PAGO")
+        if hasattr(self, '_progress'):
+            self._progress.close()
+
+        QMessageBox.critical(
+            self, "Error en Pago",
+            f"Error al ejecutar pago:\n\n{error}\n\n"
+            f"Por favor, verifique:\n"
+            f"- Saldo suficiente en wallet\n"
+            f"- Conexión a XRPL Testnet\n"
+            f"- Dirección XRPL del productor"
+        )
+        try:
+            from core.audit import log_audit as _log
+            _s = get_session()
+            _log(_s, self.operator.id, "Pago fallido", f"Error: {error[:200]}")
+            _s.commit()
+            close_session()
+        except Exception:
+            pass
+
+    def _execute_escrow_payment(self, weight, total_mxn, token_amount, uetr, end_to_end_id, progress):
+        """Execute a quality-conditional escrow payment."""
+        from core.security import generate_escrow_condition
+        from datetime import timedelta
+
+        # Determinar ventana de calidad
+        window_map = {"24 horas": 24, "48 horas": 48, "72 horas": 72, "7 días": 168}
+        window_text = self.quality_window_combo.currentText()
+        hours = window_map.get(window_text, 48)
+        cancel_after = datetime.now(timezone.utc) + timedelta(hours=hours)
+
+        # Generar condición criptográfica
+        progress.setLabelText("Generando condición criptográfica...")
+        progress.setValue(1)
+        condition_hex, fulfillment_hex = generate_escrow_condition()
+
+        # Crear escrow en XRPL
+        progress.setLabelText("Creando escrow en XRPL Testnet...")
+        progress.setValue(2)
+        escrow_result = self.xrpl_client.create_escrow(
+            sender_seed=self.xrpl_seed,
+            destination=self.current_producer.xrpl_address,
+            amount_xrp=token_amount,
+            condition_hex=condition_hex,
+            cancel_after_dt=cancel_after,
+            memo=f"Coffee Escrow - UETR: {uetr}"
+        )
+
+        if not escrow_result["validated"]:
+            raise Exception(f"EscrowCreate failed: {escrow_result['result']}")
+
+        tx_hash = escrow_result["hash"]
+        offer_sequence = escrow_result["offer_sequence"]
+
+        # Guardar en DB
+        progress.setLabelText("Guardando registro...")
+        progress.setValue(3)
+
+        session = get_session()
+
+        payment = Payment(
+            uetr=uetr,
+            xrpl_tx_hash=tx_hash,
+            amount=token_amount,
+            currency="XRP",
+            amount_mxn=total_mxn,
+            producer_id=self.current_producer.id,
+            operator_id=self.operator.id,
+            timestamp=datetime.now(timezone.utc),
+            status=PaymentStatus.ESCROWED,
+            notes=self.notes_input.toPlainText() or None
+        )
+        session.add(payment)
+        session.flush()
+
+        delivery = Delivery(
+            payment_id=payment.id,
+            weight_kg=weight,
+            price_per_kg=self.price_input.value(),
+            total_mxn=total_mxn,
+            delivery_date=datetime.now(timezone.utc),
+            notes=self.notes_input.toPlainText() or None
+        )
+        session.add(delivery)
+
+        escrow_detail = EscrowDetail(
+            payment_id=payment.id,
+            offer_sequence=offer_sequence,
+            condition_hex=condition_hex,
+            fulfillment_hex=fulfillment_hex,
+            cancel_after=cancel_after,
+            create_tx_hash=tx_hash,
+        )
+        session.add(escrow_detail)
+
+        # Generar mensajes ISO
+        progress.setLabelText("Generando mensajes ISO 20022...")
+        progress.setValue(4)
+
+        payment_data = {
+            "uetr": uetr,
+            "end_to_end_id": end_to_end_id,
+            "amount": token_amount,
+            "currency": "XRP",
+            "debtor_name": self.operator.full_name,
+            "debtor_account": self.operator.xrpl_address,
+            "creditor_name": self.current_producer.name,
+            "creditor_account": self.current_producer.xrpl_address,
+            "xrpl_tx_hash": tx_hash,
+        }
+
+        pacs008_xml = self.iso_generator.generate_pacs008(payment_data)
+        session.add(IsoMessage(payment_id=payment.id, message_type=MessageType.PACS_008, xml_content=pacs008_xml))
+
+        pacs002_pdng_xml = self.iso_generator.generate_pacs002(payment_data, xrpl_result_code="temUNKNOWN")
+        session.add(IsoMessage(payment_id=payment.id, message_type=MessageType.PACS_002, xml_content=pacs002_pdng_xml))
+
+        log_audit(session, self.operator.id, "Pago en escrow creado",
+                  f"UETR: {uetr} | Productor: {self.current_producer.name} | {token_amount:.6f} XRP | "
+                  f"Vence: {cancel_after.strftime('%d/%m/%Y %H:%M')} UTC")
+
+        session.commit()
+
+        explorer_url = self.xrpl_client.get_testnet_explorer_url(tx_hash)
+
+        QMessageBox.information(self, "Escrow Creado",
+            f"✓ Fondos bloqueados en escrow\n\n"
+            f"UETR: {uetr}\n"
+            f"Hash XRPL: {tx_hash}\n"
+            f"Monto: {token_amount:.6f} XRP\n"
+            f"Equivalente: {format_currency(total_mxn, 'MXN')}\n\n"
+            f"Ventana de calidad: {window_text}\n"
+            f"Vence: {cancel_after.strftime('%d/%m/%Y %H:%M')} UTC\n\n"
+            f"El productor puede verificar los fondos en:\n{explorer_url}\n\n"
+            f"Diríjase a la pestaña 'Escrows' para aprobar o rechazar."
+        )
+
+        self.payment_completed.emit(payment)
+        self.weight_input.setValue(0.0)
+        self.notes_input.clear()

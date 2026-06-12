@@ -14,6 +14,8 @@ from PySide6.QtGui import QColor
 from core.database import get_session, close_session
 from core.models import DailyPrice, AuditLog
 from core.audit import log_audit
+from shared_ui.components import attach_empty_state
+from PySide6.QtGui import QColor, QBrush
 from datetime import datetime, timezone, date
 
 
@@ -70,7 +72,10 @@ class DailyPriceWidget(QWidget):
         self.price_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.price_table.horizontalHeader().setStretchLastSection(True)
         self.price_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        self.price_table.setAlternatingRowColors(True)
+        self.price_table.setSortingEnabled(True)
         hist_layout.addWidget(self.price_table)
+        attach_empty_state(self.price_table, "Sin precios registrados")
 
         refresh_btn = QPushButton("🔄 Actualizar")
         refresh_btn.setProperty("class", "secondary")
@@ -79,6 +84,9 @@ class DailyPriceWidget(QWidget):
 
         hist_group.setLayout(hist_layout)
         layout.addWidget(hist_group)
+
+        from PySide6.QtGui import QKeySequence, QShortcut
+        QShortcut(QKeySequence("F5"), self).activated.connect(self.load_prices)
 
     def save_price(self):
         """Save or update the daily price"""
@@ -118,10 +126,10 @@ class DailyPriceWidget(QWidget):
                       f"Fecha: {selected_date} | Precio: ${price_val:.2f}/kg")
             session.commit()
 
-            QMessageBox.information(
+            from shared_ui.components import Toast
+            Toast.show_message(
                 self,
-                "Precio Guardado",
-                f"✓ Precio del día guardado: ${price_val:.2f}/kg para {selected_date.strftime('%d/%m/%Y')}"
+                f"✓ Precio guardado: ${price_val:.2f}/kg — {selected_date.strftime('%d/%m/%Y')}"
             )
             self.load_prices()
 
@@ -136,13 +144,22 @@ class DailyPriceWidget(QWidget):
             session = get_session()
             prices = session.query(DailyPrice).order_by(DailyPrice.price_date.desc()).limit(30).all()
 
+            today_date = date.today()
             self.price_table.setRowCount(len(prices))
             for row, price in enumerate(prices):
                 date_str = price.price_date.strftime("%d/%m/%Y")
-                self.price_table.setItem(row, 0, QTableWidgetItem(date_str))
-                self.price_table.setItem(row, 1, QTableWidgetItem(f"${float(price.price_per_kg):.2f} MXN/kg"))
                 user_name = price.set_by_user.full_name if price.set_by_user else "—"
-                self.price_table.setItem(row, 2, QTableWidgetItem(user_name))
+
+                items = [
+                    QTableWidgetItem(date_str),
+                    QTableWidgetItem(f"${float(price.price_per_kg):.2f} MXN/kg"),
+                    QTableWidgetItem(user_name),
+                ]
+                is_today = price.price_date.date() == today_date
+                for col, item in enumerate(items):
+                    if is_today:
+                        item.setBackground(QBrush(QColor("#DFF6DD")))
+                    self.price_table.setItem(row, col, item)
 
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Error al cargar precios:\n{str(e)}")

@@ -13,6 +13,7 @@ from payment_app.ui_payment.styles import PAYMENT_STYLESHEET
 from payment_app.ui_payment.producer_view import ProducerManagementWidget
 from payment_app.ui_payment.payment_flow import PaymentFlowWidget
 from payment_app.ui_payment.history_view import HistoryViewWidget
+from payment_app.ui_payment.escrow_view import EscrowManagementWidget
 from core.models import User
 from core.xrpl_client import XRPLClient
 
@@ -29,6 +30,7 @@ class PaymentDashboard(QMainWindow):
     
     def init_ui(self):
         """Initialize the user interface"""
+        self._xrpl_ok = True  # tracks last balance refresh result for status indicator
         self.setWindowTitle("Coffee XRPL Platform - Sistema de Pagos")
         self.setMinimumSize(1400, 900)
         
@@ -72,7 +74,11 @@ class PaymentDashboard(QMainWindow):
         # History tab
         self.history_widget = HistoryViewWidget(self.operator)
         self.tabs.addTab(self.history_widget, "📋 Historial")
-        
+
+        # Escrows tab
+        self.escrow_widget = EscrowManagementWidget(self.operator, self.xrpl_seed)
+        self.tabs.addTab(self.escrow_widget, "⏳ Escrows")
+
         right_layout.addWidget(self.tabs)
         content_layout.addWidget(right_widget, 3)
         
@@ -127,18 +133,29 @@ class PaymentDashboard(QMainWindow):
         return layout
     
     def refresh_balance(self):
-        """Fetch and display XRP balance for the operator's wallet."""
+        """Fetch and display XRP balance in a background thread (non-blocking)."""
         if not self.operator.xrpl_address:
             return
-        try:
-            QApplication.setOverrideCursor(Qt.WaitCursor)
-            balance_info = self._xrpl_client.get_balance(self.operator.xrpl_address)
-            xrp = balance_info.get('xrp', 0)
-            self.balance_label.setText(f"💧 Saldo: {xrp:.6f} XRP")
-        except Exception as e:
-            self.balance_label.setText("💧 Saldo: error")
-        finally:
-            QApplication.restoreOverrideCursor()
+        self.balance_label.setText("💧 Saldo: ⏳")
+        from shared_ui.workers import FunctionWorker
+        self._balance_worker = FunctionWorker(
+            self._xrpl_client.get_balance,
+            self.operator.xrpl_address,
+        )
+        self._balance_worker.finished_ok.connect(self._on_balance_ok)
+        self._balance_worker.failed.connect(self._on_balance_fail)
+        self._balance_worker.start()
+
+    def _on_balance_ok(self, balance_info: dict):
+        xrp = balance_info.get('xrp', 0)
+        self.balance_label.setText(f"💧 Saldo: {xrp:.6f} XRP")
+        self._xrpl_ok = True
+        self.update_status("Listo")
+
+    def _on_balance_fail(self, _error: str):
+        self.balance_label.setText("💧 Saldo: sin conexión")
+        self._xrpl_ok = False
+        self.update_status("Sin conexión a XRPL Testnet")
 
     def on_producer_selected(self, producer):
         """Handle producer selection"""
@@ -149,12 +166,13 @@ class PaymentDashboard(QMainWindow):
     def on_payment_completed(self, payment):
         """Handle payment completion"""
         self.history_widget.load_history()
+        self.escrow_widget.load_escrows()
         self.update_status(f"Pago completado - UETR: {payment.uetr}")
         self.refresh_balance()
     
     def update_status(self, message: str):
-        """Update status bar message"""
-        self.status_bar.showMessage(f"🟢 {message}")
+        icon = "🟢" if getattr(self, '_xrpl_ok', True) else "🔴"
+        self.status_bar.showMessage(f"{icon} {message}")
     
     def logout(self):
         """Handle logout"""

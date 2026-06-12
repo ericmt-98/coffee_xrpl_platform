@@ -15,6 +15,7 @@ from core.database import get_session, close_session
 from core.models import User, UserRole
 from core.security import hash_password, verify_password, validate_xrpl_seed
 from core.xrpl_client import XRPLClient
+from shared_ui.components import StepIndicator
 
 
 class AuthFlowDialog(QDialog):
@@ -54,10 +55,17 @@ class AuthFlowDialog(QDialog):
         subtitle.setAlignment(Qt.AlignCenter)
         layout.addWidget(subtitle)
         
-        layout.addSpacing(20)
-        
+        layout.addSpacing(10)
+
+        # Step progress indicator
+        self.step_indicator = StepIndicator(["ID", "Contraseña", "Wallet"])
+        layout.addWidget(self.step_indicator)
+
+        layout.addSpacing(10)
+
         # Stacked widget for different steps
         self.stack = QStackedWidget()
+        self.stack.currentChanged.connect(self.step_indicator.set_current)
         layout.addWidget(self.stack)
         
         # Step 1: ID verification
@@ -445,6 +453,8 @@ class AuthFlowDialog(QDialog):
                 # but better to let the main window manage its own session
                 if self.authenticated_user:
                     session.expunge(self.authenticated_user)
+                    from sqlalchemy.orm import make_transient
+                    make_transient(self.authenticated_user)
             finally:
                 close_session()
             
@@ -452,7 +462,6 @@ class AuthFlowDialog(QDialog):
 
             # Log successful operator login to audit trail
             try:
-                from core.database import get_session, close_session
                 from core.audit import log_audit
                 audit_session = get_session()
                 try:

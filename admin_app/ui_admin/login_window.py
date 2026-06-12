@@ -15,6 +15,7 @@ from admin_app.ui_admin.styles import ADMIN_STYLESHEET
 from core.database import get_session, close_session, database_exists, init_database
 from core.models import User, UserRole
 from core.security import hash_password, verify_password
+from shared_ui.components import add_password_toggle
 from datetime import datetime, timezone
 
 
@@ -111,13 +112,18 @@ class LoginWindow(QDialog):
         
         self.username_input = QLineEdit()
         self.username_input.setPlaceholderText("Usuario")
+        self.username_input.returnPressed.connect(lambda: self.password_input.setFocus())
         form_layout.addRow("Usuario:", self.username_input)
-        
+
         self.password_input = QLineEdit()
         self.password_input.setEchoMode(QLineEdit.Password)
         self.password_input.setPlaceholderText("Contraseña")
         self.password_input.returnPressed.connect(self.login)
-        form_layout.addRow("Contraseña:", self.password_input)
+        pwd_toggle = add_password_toggle(self.password_input)
+        pwd_row = QHBoxLayout()
+        pwd_row.addWidget(self.password_input)
+        pwd_row.addWidget(pwd_toggle)
+        form_layout.addRow("Contraseña:", pwd_row)
         
         form_group.setLayout(form_layout)
         parent_layout.addWidget(form_group)
@@ -281,6 +287,11 @@ class LoginWindow(QDialog):
             user.failed_login_count = 0
             user.locked_until = None
             session.commit()
+
+            # Detach from session so attributes remain accessible after close
+            from sqlalchemy.orm import make_transient
+            session.expunge(user)
+            make_transient(user)
 
             self.authenticated_user = user
             self.accept()

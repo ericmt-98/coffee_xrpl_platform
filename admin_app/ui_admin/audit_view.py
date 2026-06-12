@@ -12,8 +12,11 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt, QDate
 
+from PySide6.QtGui import QKeySequence, QShortcut
+
 from core.database import get_session, close_session
 from core.models import AuditLog, User, Payment, IsoMessage
+from shared_ui.components import attach_empty_state
 from datetime import datetime
 import openpyxl
 from openpyxl.styles import Font, PatternFill
@@ -50,6 +53,9 @@ class AuditViewWidget(QWidget):
         # Export section
         export_group = self.create_export_section()
         layout.addWidget(export_group)
+
+        QShortcut(QKeySequence("F5"), self).activated.connect(self.load_audit_logs)
+        QShortcut(QKeySequence("Ctrl+E"), self).activated.connect(self.export_audit_to_excel)
     
     def create_filters(self) -> QGroupBox:
         """Create filter controls"""
@@ -100,7 +106,9 @@ class AuditViewWidget(QWidget):
         self.audit_table.horizontalHeader().setStretchLastSection(True)
         self.audit_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
         
+        self.audit_table.setAlternatingRowColors(True)
         layout.addWidget(self.audit_table)
+        attach_empty_state(self.audit_table, "No hay registros para el rango seleccionado")
 
         self.audit_count_label = QLabel("Cargando...")
         self.audit_count_label.setStyleSheet("font-size: 9pt; color: #605E5C;")
@@ -141,6 +149,11 @@ class AuditViewWidget(QWidget):
 
         cierre_btn = QPushButton("📥 Cierre de Día (camt.053)")
         cierre_btn.setProperty("class", "success")
+        cierre_btn.setToolTip(
+            "Genera el estado de cuenta del día (camt.053)\n"
+            "con todos los pagos completados y simulados de hoy.\n"
+            "Equivalente bancario: Bank Statement."
+        )
         cierre_btn.clicked.connect(self.generate_cierre_dia)
         layout.addWidget(cierre_btn)
 
@@ -287,12 +300,8 @@ class AuditViewWidget(QWidget):
             
             # Save
             wb.save(file_path)
-            
-            QMessageBox.information(
-                self,
-                "Exportación Exitosa",
-                f"Auditoría exportada exitosamente a:\n{file_path}"
-            )
+            from shared_ui.components import Toast
+            Toast.show_message(self, f"✓ Auditoría exportada")
             
         except Exception as e:
             QMessageBox.critical(
@@ -350,12 +359,8 @@ class AuditViewWidget(QWidget):
             
             # Save
             wb.save(file_path)
-            
-            QMessageBox.information(
-                self,
-                "Exportación Exitosa",
-                f"Pagos exportados exitosamente a:\n{file_path}"
-            )
+            from shared_ui.components import Toast
+            Toast.show_message(self, "✓ Pagos exportados")
             
         except Exception as e:
             QMessageBox.critical(
@@ -399,11 +404,8 @@ class AuditViewWidget(QWidget):
                 with open(file_path, 'w', encoding='utf-8') as f:
                     f.write(msg.xml_content)
             
-            QMessageBox.information(
-                self,
-                "Exportación Exitosa",
-                f"{len(messages)} mensajes ISO 20022 exportados exitosamente a:\n{dir_path}"
-            )
+            from shared_ui.components import Toast
+            Toast.show_message(self, f"✓ {len(messages)} mensajes ISO exportados")
             
         except Exception as e:
             QMessageBox.critical(

@@ -16,6 +16,7 @@ from core.database import get_session, close_session
 from core.models import User, UserRole, AuditLog
 from core.utils import generate_user_id
 from core.security import hash_password
+from shared_ui.components import attach_empty_state
 from datetime import datetime, timezone
 
 
@@ -121,8 +122,11 @@ class UserManagementWidget(QWidget):
         self.user_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.user_table.horizontalHeader().setStretchLastSection(True)
         self.user_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
-        
+        self.user_table.setAlternatingRowColors(True)
+        self.user_table.setSortingEnabled(True)
+
         layout.addWidget(self.user_table)
+        attach_empty_state(self.user_table, "No hay usuarios registrados")
         
         # Action buttons
         action_layout = QHBoxLayout()
@@ -167,7 +171,7 @@ class UserManagementWidget(QWidget):
             try:
                 generated_id = generate_user_id(name, xrpl)
                 self.generated_id_label.setText(generated_id)
-            except:
+            except Exception:
                 self.generated_id_label.setText("Error")
         else:
             self.generated_id_label.setText("—")

@@ -17,6 +17,8 @@ def main():
     """Main function"""
     app = QApplication(sys.argv)
     app.setApplicationName("Coffee XRPL Platform - Admin")
+    from shared_ui.theme import make_app_icon
+    app.setWindowIcon(make_app_icon("☕"))
     
     # Show login window
     login_window = LoginWindow()

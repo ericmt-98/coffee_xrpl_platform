@@ -186,6 +186,10 @@ QTableWidget {{
     gridline-color: {COLORS['border']};
 }}
 
+QTableWidget {{
+    alternate-background-color: #FAFAFA;
+}}
+
 QTableWidget::item {{
     padding: 8px;
 }}

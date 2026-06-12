@@ -19,6 +19,8 @@ def main():
     """Main function"""
     app = QApplication(sys.argv)
     app.setApplicationName("Coffee XRPL Platform - Payments")
+    from shared_ui.theme import make_app_icon
+    app.setWindowIcon(make_app_icon("☕"))
     
     # Check if database exists
     if not database_exists():
