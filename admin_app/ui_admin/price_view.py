@@ -141,8 +141,8 @@ class DailyPriceWidget(QWidget):
                 date_str = price.price_date.strftime("%d/%m/%Y")
                 self.price_table.setItem(row, 0, QTableWidgetItem(date_str))
                 self.price_table.setItem(row, 1, QTableWidgetItem(f"${float(price.price_per_kg):.2f} MXN/kg"))
-                user_name = price.set_by_user_id or "—"
-                self.price_table.setItem(row, 2, QTableWidgetItem(str(user_name)))
+                user_name = price.set_by_user.full_name if price.set_by_user else "—"
+                self.price_table.setItem(row, 2, QTableWidgetItem(user_name))
 
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Error al cargar precios:\n{str(e)}")

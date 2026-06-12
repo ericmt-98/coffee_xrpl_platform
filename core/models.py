@@ -157,3 +157,5 @@ class DailyPrice(Base):
     price_per_kg = Column(Numeric(10, 2), nullable=False)
     set_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    set_by_user = relationship("User", foreign_keys=[set_by_user_id])

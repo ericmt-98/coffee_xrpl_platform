@@ -277,7 +277,6 @@ class HistoryViewWidget(QWidget):
 
                 self.payment_table.setItem(row, 5, QTableWidgetItem(f"{float(payment.amount):.6f} {payment.currency}"))
 
-                from PySide6.QtGui import QColor
                 status_str = payment.status.value.capitalize()
                 status_item = QTableWidgetItem(status_str)
                 if payment.status.value == "completed":

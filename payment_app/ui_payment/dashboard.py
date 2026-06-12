@@ -3,7 +3,7 @@ Main Dashboard for Payment Application
 """
 
 from PySide6.QtWidgets import (
-    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QTabWidget, QLabel, QPushButton, QMessageBox,
     QStatusBar
 )
@@ -131,7 +131,6 @@ class PaymentDashboard(QMainWindow):
         if not self.operator.xrpl_address:
             return
         try:
-            from PySide6.QtWidgets import QApplication
             QApplication.setOverrideCursor(Qt.WaitCursor)
             balance_info = self._xrpl_client.get_balance(self.operator.xrpl_address)
             xrp = balance_info.get('xrp', 0)
