@@ -152,3 +152,56 @@ def test_generate_pacs002_pdng(sample_payment_data):
     ns = "urn:iso:std:iso:20022:tech:xsd:pacs.002.001.10"
     tx_sts = root.find(f".//{{{ns}}}TxSts")
     assert tx_sts is not None and tx_sts.text == "PDNG"
+
+
+# ── daily price model ─────────────────────────────────────────────────────────
+
+def test_daily_price_model_importable():
+    """DailyPrice model must exist and have correct fields"""
+    from core.models import DailyPrice
+    from sqlalchemy import inspect
+    mapper = inspect(DailyPrice)
+    col_names = {c.key for c in mapper.column_attrs}
+    assert "price_date" in col_names
+    assert "price_per_kg" in col_names
+    assert "set_by_user_id" in col_names
+
+
+# ── camt.053 ──────────────────────────────────────────────────────────────────
+
+def test_generate_camt053_parseable(sample_payment_data):
+    """generate_camt053 must produce well-formed XML"""
+    from core.iso_generator import ISO20022Generator
+    from datetime import datetime, timezone
+    gen = ISO20022Generator()
+
+    # Minimal mock payment-like dict approach — camt.053 accepts a list of
+    # objects with .uetr, .amount, .currency, .timestamp, .producer.xrpl_address
+    # Use the generator with real-looking statement data
+    statement_data = {
+        "statement_id": "STMT-20240101-TEST01",
+        "account_id": "rKsq2QsB4erZ9QvixAhg9f8TZPqB2bwJvc",
+        "account_name": "Test Operator",
+        "opening_balance": 100.0,
+        "from_date": datetime(2024, 1, 1, tzinfo=timezone.utc),
+        "to_date": datetime(2024, 1, 2, tzinfo=timezone.utc),
+    }
+    # generate_camt053 with empty payment list must still produce valid XML
+    xml_str = gen.generate_camt053([], statement_data)
+    from lxml import etree
+    root = etree.fromstring(xml_str.encode("utf-8"))
+    assert root is not None
+
+
+# ── pacs.002 message type ─────────────────────────────────────────────────────
+
+def test_message_type_enum_has_pacs002():
+    from core.models import MessageType
+    assert hasattr(MessageType, "PACS_002")
+    assert MessageType.PACS_002.value == "pacs.002"
+
+
+def test_payment_status_has_simulated():
+    from core.models import PaymentStatus
+    assert hasattr(PaymentStatus, "SIMULATED")
+    assert PaymentStatus.SIMULATED.value == "simulated"

@@ -271,23 +271,39 @@ class ISO20022Generator:
             encoding='UTF-8'
         ).decode('utf-8')
 
-    def generate_camt053(self, statement_data: Dict[str, Any]) -> str:
+    def generate_camt053(self, payments_or_data, statement_data: Dict[str, Any] = None) -> str:
         """
         Generate camt.053.001.08 - BankToCustomerStatement (simplified)
 
-        Args:
+        Can be called in two ways:
+          generate_camt053(statement_data)           — legacy single-arg form
+          generate_camt053(payments, statement_data) — new two-arg form
+
+        Args (two-arg form):
+            payments: List of payment dicts (may be empty)
             statement_data: Dict containing:
                 - account_id: str
                 - account_name: str
                 - statement_id: str
                 - from_date: datetime
                 - to_date: datetime
-                - transactions: List[Dict] (payment_data dicts)
                 - opening_balance: float (optional, default 0)
+
+        Args (single-arg form):
+            statement_data: Same dict as above, plus optional 'transactions' key
 
         Returns:
             XML string
         """
+        # Normalise arguments: support both calling conventions
+        if statement_data is None:
+            # Legacy: generate_camt053(statement_data_dict)
+            statement_data = payments_or_data
+            transactions = statement_data.get('transactions', [])
+        else:
+            # New: generate_camt053(payments_list, statement_data_dict)
+            transactions = payments_or_data if payments_or_data is not None else []
+
         root = etree.Element(
             "Document",
             nsmap={None: "urn:iso:std:iso:20022:tech:xsd:camt.053.001.08"}
@@ -328,7 +344,7 @@ class ISO20022Generator:
             to_dt_tm.text = self.format_datetime(statement_data['to_date'])
 
         # Balances — opening (OPBD) and closing (CLBD) calculated from transactions
-        transactions = statement_data.get('transactions', [])
+
         opening = float(statement_data.get('opening_balance', 0))
         total_tx = sum(float(tx.get('amount', 0)) for tx in transactions)
         closing = opening + total_tx

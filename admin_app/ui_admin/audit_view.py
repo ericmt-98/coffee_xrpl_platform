@@ -138,7 +138,12 @@ class AuditViewWidget(QWidget):
         export_iso_btn = QPushButton("📄 Exportar Mensajes ISO 20022")
         export_iso_btn.clicked.connect(self.export_iso_messages)
         layout.addWidget(export_iso_btn)
-        
+
+        cierre_btn = QPushButton("📥 Cierre de Día (camt.053)")
+        cierre_btn.setProperty("class", "success")
+        cierre_btn.clicked.connect(self.generate_cierre_dia)
+        layout.addWidget(cierre_btn)
+
         layout.addStretch()
         
         group.setLayout(layout)
@@ -406,5 +411,97 @@ class AuditViewWidget(QWidget):
                 "Error",
                 f"Error al exportar mensajes ISO:\n{str(e)}"
             )
+        finally:
+            close_session()
+
+    def generate_cierre_dia(self):
+        """Generate end-of-day camt.053 bank statement for today's payments"""
+        from datetime import date, timezone
+        from core.iso_generator import ISO20022Generator
+        from core.models import Payment, IsoMessage, MessageType, PaymentStatus
+        from core.xrpl_client import XRPLClient
+        import uuid
+
+        try:
+            session = get_session()
+
+            # All completed/simulated payments for today
+            today = datetime.combine(date.today(), datetime.min.time())
+            tomorrow = datetime.combine(date.today(), datetime.max.time())
+
+            today_payments = session.query(Payment).filter(
+                Payment.timestamp >= today,
+                Payment.timestamp <= tomorrow,
+                Payment.status.in_([PaymentStatus.COMPLETED, PaymentStatus.SIMULATED])
+            ).order_by(Payment.timestamp.asc()).all()
+
+            if not today_payments:
+                QMessageBox.information(
+                    self,
+                    "Sin Pagos",
+                    "No hay pagos completados hoy para generar el estado de cuenta."
+                )
+                return
+
+            # Try to get current XRP balance (best-effort)
+            opening_balance = 0.0
+            try:
+                # Use the first payment's operator wallet address
+                first_operator = today_payments[0].operator
+                client = XRPLClient()
+                bal = client.get_balance(first_operator.xrpl_address)
+                # opening balance = current balance (simplified: no historical reconstruction)
+                opening_balance = bal.get("xrp", 0.0)
+            except Exception:
+                opening_balance = 0.0
+
+            statement_data = {
+                "statement_id": f"STMT-{date.today().strftime('%Y%m%d')}-{uuid.uuid4().hex[:6].upper()}",
+                "account_id": today_payments[0].operator.xrpl_address,
+                "account_name": today_payments[0].operator.full_name,
+                "opening_balance": opening_balance,
+                "from_date": today,
+                "to_date": tomorrow,
+            }
+
+            gen = ISO20022Generator()
+            xml_str = gen.generate_camt053(today_payments, statement_data)
+
+            # Save to DB (payment_id=None — statement covers multiple payments)
+            iso_msg = IsoMessage(
+                payment_id=None,
+                message_type=MessageType.CAMT_053,
+                xml_content=xml_str,
+            )
+            session.add(iso_msg)
+            session.commit()
+
+            # Offer to save file
+            file_path, _ = QFileDialog.getSaveFileName(
+                self,
+                "Guardar Cierre de Día",
+                f"camt053_cierre_{date.today().strftime('%Y%m%d')}.xml",
+                "XML Files (*.xml)"
+            )
+
+            if file_path:
+                with open(file_path, "w", encoding="utf-8") as f:
+                    f.write(xml_str)
+                QMessageBox.information(
+                    self,
+                    "Cierre Generado",
+                    f"Estado de cuenta camt.053 generado con {len(today_payments)} entradas.\n"
+                    f"Guardado en: {file_path}"
+                )
+            else:
+                QMessageBox.information(
+                    self,
+                    "Cierre Generado",
+                    f"Estado de cuenta camt.053 guardado en base de datos "
+                    f"({len(today_payments)} entradas). Sin exportar a archivo."
+                )
+
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Error al generar cierre de día:\n{str(e)}")
         finally:
             close_session()
