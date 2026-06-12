@@ -9,7 +9,6 @@ xrpl-py>=2.5.0
 
 # XML Generation
 lxml>=4.9.0
-Jinja2>=3.1.0
 
 # Utilities
 python-dotenv>=1.0.0

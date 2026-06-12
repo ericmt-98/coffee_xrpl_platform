@@ -27,6 +27,7 @@ class HistoryViewWidget(QWidget):
     def __init__(self, operator: User):
         super().__init__()
         self.operator = operator
+        self._history_offset = 0
         self.init_ui()
         self.load_history()
     
@@ -77,7 +78,13 @@ class HistoryViewWidget(QWidget):
         self.payment_table.doubleClicked.connect(self.show_payment_details)
         
         layout.addWidget(self.payment_table)
-        
+
+        self.load_more_btn = QPushButton("Cargar más...")
+        self.load_more_btn.setProperty("class", "secondary")
+        self.load_more_btn.setVisible(False)
+        self.load_more_btn.clicked.connect(self._load_more)
+        layout.addWidget(self.load_more_btn)
+
         # Summary
         self.summary_label = QLabel()
         self.summary_label.setStyleSheet("font-size: 10pt; color: #605E5C; padding: 10px;")
@@ -149,72 +156,78 @@ class HistoryViewWidget(QWidget):
     def load_history(self):
         """Load payment history"""
         try:
+            self._history_offset = 0
             session = get_session()
 
-            # Get payments for this operator, applying active filters
+            # Get payments for this operator, applying active filters with pagination
             payments = self._build_filtered_query(session).order_by(
                 Payment.timestamp.desc()
-            ).all()
-            
+            ).offset(self._history_offset).limit(200).all()
+
+            total_count = self._build_filtered_query(session).count()
+
             self.payment_table.setRowCount(len(payments))
-            
+
             total_mxn = 0.0
             total_kg = 0.0
-            
+
             for row, payment in enumerate(payments):
                 # Timestamp
                 timestamp_str = format_datetime_display(payment.timestamp)
-                self.payment_table.setItem(row, 0, QTableWidgetItem(timestamp_str))
-                self.payment_table.item(row, 0).setData(Qt.UserRole, payment.id)
-                
+                item = QTableWidgetItem(timestamp_str)
+                item.setData(Qt.UserRole, payment.id)
+                self.payment_table.setItem(row, 0, item)
+
                 # Producer
                 self.payment_table.setItem(row, 1, QTableWidgetItem(payment.producer.name))
-                
+
                 # Weight
                 if payment.delivery:
-                    weight_str = f"{payment.delivery.weight_kg:.2f}"
+                    weight_str = f"{float(payment.delivery.weight_kg):.2f}"
                     self.payment_table.setItem(row, 2, QTableWidgetItem(weight_str))
-                    total_kg += payment.delivery.weight_kg
-                    
+                    total_kg += float(payment.delivery.weight_kg)
+
                     # Price per kg
-                    price_str = format_currency(payment.delivery.price_per_kg, "MXN")
+                    price_str = format_currency(float(payment.delivery.price_per_kg), "MXN")
                     self.payment_table.setItem(row, 3, QTableWidgetItem(price_str))
                 else:
                     self.payment_table.setItem(row, 2, QTableWidgetItem("—"))
                     self.payment_table.setItem(row, 3, QTableWidgetItem("—"))
-                
+
                 # Total MXN
                 if payment.amount_mxn:
-                    total_str = format_currency(payment.amount_mxn, "MXN")
+                    total_str = format_currency(float(payment.amount_mxn), "MXN")
                     self.payment_table.setItem(row, 4, QTableWidgetItem(total_str))
-                    total_mxn += payment.amount_mxn
+                    total_mxn += float(payment.amount_mxn)
                 else:
                     self.payment_table.setItem(row, 4, QTableWidgetItem("—"))
-                
+
                 # Token
-                token_str = f"{payment.amount:.6f} {payment.currency}"
+                token_str = f"{float(payment.amount):.6f} {payment.currency}"
                 self.payment_table.setItem(row, 5, QTableWidgetItem(token_str))
-                
+
                 # Status
                 status_str = payment.status.value.capitalize()
                 status_item = QTableWidgetItem(status_str)
-                
+
                 if payment.status.value == "completed":
                     status_item.setForeground(QColor("#107C10"))
                 elif payment.status.value == "failed":
                     status_item.setForeground(QColor("#D13438"))
+                elif payment.status.value == "simulated":
+                    status_item.setForeground(QColor("#605E5C"))
                 else:
                     status_item.setForeground(QColor("#FF8C00"))
-                
+
                 self.payment_table.setItem(row, 6, status_item)
-            
+
             # Update summary
             self.summary_label.setText(
-                f"Total de pagos: {len(payments)} | "
-                f"Total kg: {total_kg:.2f} | "
-                f"Total MXN: {format_currency(total_mxn, 'MXN')}"
+                f"Mostrando {len(payments)} de {total_count} | "
+                f"Total kg: {total_kg:.2f} | Total MXN: {format_currency(total_mxn, 'MXN')}"
             )
-            
+            self.load_more_btn.setVisible(total_count > 200)
+
         except Exception as e:
             QMessageBox.critical(
                 self,
@@ -224,6 +237,67 @@ class HistoryViewWidget(QWidget):
         finally:
             close_session()
     
+    def _load_more(self):
+        """Append next page of 200 payments to the table."""
+        try:
+            session = get_session()
+            self._history_offset += 200
+            more_payments = (
+                self._build_filtered_query(session)
+                .order_by(Payment.timestamp.desc())
+                .offset(self._history_offset)
+                .limit(200)
+                .all()
+            )
+            current_rows = self.payment_table.rowCount()
+            self.payment_table.setRowCount(current_rows + len(more_payments))
+
+            total_count = self._build_filtered_query(session).count()
+
+            for row_idx, payment in enumerate(more_payments):
+                row = current_rows + row_idx
+                timestamp_str = format_datetime_display(payment.timestamp)
+                item = QTableWidgetItem(timestamp_str)
+                item.setData(Qt.UserRole, payment.id)
+                self.payment_table.setItem(row, 0, item)
+
+                self.payment_table.setItem(row, 1, QTableWidgetItem(payment.producer.name))
+
+                if payment.delivery:
+                    self.payment_table.setItem(row, 2, QTableWidgetItem(f"{float(payment.delivery.weight_kg):.2f}"))
+                    self.payment_table.setItem(row, 3, QTableWidgetItem(format_currency(float(payment.delivery.price_per_kg), "MXN")))
+                else:
+                    self.payment_table.setItem(row, 2, QTableWidgetItem("—"))
+                    self.payment_table.setItem(row, 3, QTableWidgetItem("—"))
+
+                if payment.amount_mxn:
+                    self.payment_table.setItem(row, 4, QTableWidgetItem(format_currency(float(payment.amount_mxn), "MXN")))
+                else:
+                    self.payment_table.setItem(row, 4, QTableWidgetItem("—"))
+
+                self.payment_table.setItem(row, 5, QTableWidgetItem(f"{float(payment.amount):.6f} {payment.currency}"))
+
+                from PySide6.QtGui import QColor
+                status_str = payment.status.value.capitalize()
+                status_item = QTableWidgetItem(status_str)
+                if payment.status.value == "completed":
+                    status_item.setForeground(QColor("#107C10"))
+                elif payment.status.value == "failed":
+                    status_item.setForeground(QColor("#D13438"))
+                elif payment.status.value == "simulated":
+                    status_item.setForeground(QColor("#605E5C"))
+                else:
+                    status_item.setForeground(QColor("#FF8C00"))
+                self.payment_table.setItem(row, 6, status_item)
+
+            loaded_total = self.payment_table.rowCount()
+            self.load_more_btn.setVisible(loaded_total < total_count)
+
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Error al cargar más pagos:\n{str(e)}")
+        finally:
+            close_session()
+
     def show_payment_details(self, index):
         """Show detailed payment information"""
         try:

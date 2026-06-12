@@ -24,12 +24,12 @@ class PaymentFlowWidget(QWidget):
     
     payment_completed = Signal(Payment)
     
-    def __init__(self, operator: User, xrpl_seed: str):
+    def __init__(self, operator: User, xrpl_seed: str, xrpl_client=None):
         super().__init__()
         self.operator = operator
         self.xrpl_seed = xrpl_seed
         self.current_producer = None
-        self.xrpl_client = XRPLClient()
+        self.xrpl_client = xrpl_client or XRPLClient()
         self.iso_generator = ISO20022Generator()
         
         self.init_ui()
@@ -65,7 +65,8 @@ class PaymentFlowWidget(QWidget):
         self.weight_input.valueChanged.connect(self._update_pay_button_state)
 
         layout.addStretch()
-    
+        self._load_daily_price()
+
     def create_measurement_section(self) -> QGroupBox:
         """Create measurement and calculation section"""
         group = QGroupBox("Medición y Cálculo")
@@ -190,7 +191,29 @@ class PaymentFlowWidget(QWidget):
         self.weight_input.setValue(0.01)
         self.calculate_total()
         self._update_pay_button_state()
-    
+        self._load_daily_price()
+
+    def _load_daily_price(self):
+        """Load today's reference price from DB if available."""
+        try:
+            from core.database import get_session, close_session
+            from core.models import DailyPrice
+            from datetime import date
+            session = get_session()
+            today = datetime.now(timezone.utc).date()
+            today_dt = datetime.combine(today, datetime.min.time())
+            daily = session.query(DailyPrice).filter_by(price_date=today_dt).first()
+            if daily:
+                self.price_input.setValue(float(daily.price_per_kg))
+                # Visual indicator
+                self.price_input.setToolTip(f"Precio oficial del día: ${float(daily.price_per_kg):.2f}/kg")
+            else:
+                self.price_input.setToolTip("Sin precio oficial configurado — usando valor por defecto")
+        except Exception:
+            pass
+        finally:
+            close_session()
+
     def calculate_total(self):
         """Calculate total payment amount"""
         weight = self.weight_input.value()
@@ -261,10 +284,29 @@ class PaymentFlowWidget(QWidget):
             uetr = self.iso_generator.generate_uetr()
             end_to_end_id = self.iso_generator.generate_end_to_end_id()
             
+            # Pre-flight balance check for XRP payments
+            if currency == "XRP":
+                try:
+                    balance_info = self.xrpl_client.get_balance(self.operator.xrpl_address)
+                    available_xrp = balance_info.get('xrp', 0)
+                    required = float(token_amount) + 1.0  # amount + base reserve margin
+                    if available_xrp < required:
+                        QMessageBox.critical(
+                            self,
+                            "Saldo Insuficiente",
+                            f"Saldo insuficiente en wallet.\n\n"
+                            f"Disponible: {available_xrp:.6f} XRP\n"
+                            f"Requerido: {required:.6f} XRP (monto + reserva base)\n\n"
+                            f"No se enviará la transacción."
+                        )
+                        return
+                except Exception:
+                    pass  # Balance check failure must not block — let XRPL reject if needed
+
             # Step 2: Execute XRPL payment
             progress.setLabelText("Enviando transacción XRPL...")
             progress.setValue(2)
-            
+
             # Only XRP is actually sent; others are simulated
             if currency == "XRP":
                 tx_result = self.xrpl_client.send_xrp_payment(

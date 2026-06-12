@@ -20,11 +20,11 @@ from core.xrpl_client import XRPLClient
 class PaymentDashboard(QMainWindow):
     """Main dashboard window for Payment application"""
     
-    def __init__(self, operator: User, xrpl_seed: str):
+    def __init__(self, operator: User, xrpl_seed: str, xrpl_client=None):
         super().__init__()
         self.operator = operator
         self.xrpl_seed = xrpl_seed  # Stored in RAM only
-        self._xrpl_client = XRPLClient()
+        self._xrpl_client = xrpl_client or XRPLClient()
         self.init_ui()
     
     def init_ui(self):
@@ -65,7 +65,7 @@ class PaymentDashboard(QMainWindow):
         self.tabs = QTabWidget()
         
         # Payment tab
-        self.payment_widget = PaymentFlowWidget(self.operator, self.xrpl_seed)
+        self.payment_widget = PaymentFlowWidget(self.operator, self.xrpl_seed, xrpl_client=self._xrpl_client)
         self.payment_widget.payment_completed.connect(self.on_payment_completed)
         self.tabs.addTab(self.payment_widget, "💰 Realizar Pago")
         

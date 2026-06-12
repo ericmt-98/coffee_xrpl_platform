@@ -137,7 +137,7 @@ class IsoMessage(Base):
 class AuditLog(Base):
     """System audit trail"""
     __tablename__ = "audit_logs"
-    
+
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     action = Column(String(100), nullable=False)
@@ -146,3 +146,14 @@ class AuditLog(Base):
 
     # Relationships
     user = relationship("User", back_populates="audit_logs")
+
+
+class DailyPrice(Base):
+    """Daily reference price for coffee kg set by admin"""
+    __tablename__ = "daily_prices"
+
+    id = Column(Integer, primary_key=True)
+    price_date = Column(DateTime, nullable=False, unique=True)
+    price_per_kg = Column(Numeric(10, 2), nullable=False)
+    set_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))

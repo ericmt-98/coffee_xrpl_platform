@@ -25,6 +25,7 @@ class AuditViewWidget(QWidget):
     
     def __init__(self):
         super().__init__()
+        self._audit_offset = 0
         self.init_ui()
         self.load_audit_logs()
     
@@ -100,7 +101,17 @@ class AuditViewWidget(QWidget):
         self.audit_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
         
         layout.addWidget(self.audit_table)
-        
+
+        self.audit_count_label = QLabel("Cargando...")
+        self.audit_count_label.setStyleSheet("font-size: 9pt; color: #605E5C;")
+        layout.addWidget(self.audit_count_label, alignment=Qt.AlignLeft)
+
+        self.audit_load_more_btn = QPushButton("Cargar más...")
+        self.audit_load_more_btn.setProperty("class", "secondary")
+        self.audit_load_more_btn.setVisible(False)
+        self.audit_load_more_btn.clicked.connect(self._load_more_audit)
+        layout.addWidget(self.audit_load_more_btn, alignment=Qt.AlignLeft)
+
         # Refresh button
         refresh_btn = QPushButton("🔄 Actualizar")
         refresh_btn.setProperty("class", "secondary")
@@ -147,28 +158,36 @@ class AuditViewWidget(QWidget):
             datetime_to = datetime.combine(date_to, datetime.max.time())
             
             # Query logs
+            self._audit_offset = 0
+            total_count = session.query(AuditLog).filter(
+                AuditLog.timestamp >= datetime_from,
+                AuditLog.timestamp <= datetime_to
+            ).count()
             logs = session.query(AuditLog).filter(
                 AuditLog.timestamp >= datetime_from,
                 AuditLog.timestamp <= datetime_to
-            ).order_by(AuditLog.timestamp.desc()).all()
-            
+            ).order_by(AuditLog.timestamp.desc()).limit(200).all()
+
             self.audit_table.setRowCount(len(logs))
-            
+
             for row, log in enumerate(logs):
                 # Timestamp
                 timestamp_str = log.timestamp.strftime("%d/%m/%Y %H:%M:%S")
                 self.audit_table.setItem(row, 0, QTableWidgetItem(timestamp_str))
-                
+
                 # User
                 user_name = log.user.full_name if log.user else "Sistema"
                 self.audit_table.setItem(row, 1, QTableWidgetItem(user_name))
-                
+
                 # Action
                 self.audit_table.setItem(row, 2, QTableWidgetItem(log.action))
-                
+
                 # Details
                 details = log.details or "—"
                 self.audit_table.setItem(row, 3, QTableWidgetItem(details))
+
+            self.audit_count_label.setText(f"Mostrando {len(logs)} de {total_count} registros")
+            self.audit_load_more_btn.setVisible(total_count > 200)
             
         except Exception as e:
             QMessageBox.critical(
@@ -178,7 +197,52 @@ class AuditViewWidget(QWidget):
             )
         finally:
             close_session()
-    
+
+    def _load_more_audit(self):
+        """Append next 200 audit records"""
+        try:
+            session = get_session()
+            self._audit_offset += 200
+
+            date_from = self.date_from.date().toPython()
+            date_to = self.date_to.date().toPython()
+            datetime_from = datetime.combine(date_from, datetime.min.time())
+            datetime_to = datetime.combine(date_to, datetime.max.time())
+
+            more_logs = session.query(AuditLog).filter(
+                AuditLog.timestamp >= datetime_from,
+                AuditLog.timestamp <= datetime_to
+            ).order_by(AuditLog.timestamp.desc()).offset(self._audit_offset).limit(200).all()
+
+            current_rows = self.audit_table.rowCount()
+            self.audit_table.setRowCount(current_rows + len(more_logs))
+
+            total_count = session.query(AuditLog).filter(
+                AuditLog.timestamp >= datetime_from,
+                AuditLog.timestamp <= datetime_to
+            ).count()
+
+            for row_idx, log in enumerate(more_logs):
+                row = current_rows + row_idx
+                self.audit_table.setItem(row, 0, QTableWidgetItem(
+                    log.timestamp.strftime("%d/%m/%Y %H:%M:%S")
+                ))
+                self.audit_table.setItem(row, 1, QTableWidgetItem(
+                    log.user.full_name if log.user else "Sistema"
+                ))
+                self.audit_table.setItem(row, 2, QTableWidgetItem(log.action))
+                self.audit_table.setItem(row, 3, QTableWidgetItem(log.details or "—"))
+
+            loaded = self.audit_table.rowCount()
+            self.audit_count_label.setText(f"Mostrando {loaded} de {total_count} registros")
+            self.audit_load_more_btn.setVisible(loaded < total_count)
+
+        except Exception as e:
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.critical(self, "Error", f"Error al cargar más registros:\n{str(e)}")
+        finally:
+            close_session()
+
     def export_audit_to_excel(self):
         """Export audit logs to Excel"""
         try:
