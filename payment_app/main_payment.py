@@ -12,6 +12,7 @@ from PySide6.QtWidgets import QApplication, QMessageBox
 from payment_app.ui_payment.auth_flow import AuthFlowDialog
 from payment_app.ui_payment.dashboard import PaymentDashboard
 from core.database import database_exists
+from core.xrpl_client import XRPLClient
 
 
 def main():
@@ -36,9 +37,11 @@ def main():
     if auth_dialog.exec() == AuthFlowDialog.Accepted:
         # Authentication successful, show dashboard
         if auth_dialog.authenticated_user and auth_dialog.xrpl_seed:
+            xrpl_client = XRPLClient()
             dashboard = PaymentDashboard(
                 auth_dialog.authenticated_user,
-                auth_dialog.xrpl_seed
+                auth_dialog.xrpl_seed,
+                xrpl_client=xrpl_client
             )
             dashboard.show()
             sys.exit(app.exec())

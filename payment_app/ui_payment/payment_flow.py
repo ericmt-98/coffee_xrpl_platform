@@ -16,7 +16,7 @@ from core.models import Producer, User, Payment, Delivery, IsoMessage, PaymentSt
 from core.xrpl_client import XRPLClient, convert_mxn_to_token
 from core.iso_generator import ISO20022Generator
 from core.utils import format_currency, calculate_payment_total
-from datetime import datetime
+from datetime import datetime, timezone
 
 
 class PaymentFlowWidget(QWidget):
@@ -24,12 +24,12 @@ class PaymentFlowWidget(QWidget):
     
     payment_completed = Signal(Payment)
     
-    def __init__(self, operator: User, xrpl_seed: str):
+    def __init__(self, operator: User, xrpl_seed: str, xrpl_client=None):
         super().__init__()
         self.operator = operator
         self.xrpl_seed = xrpl_seed
         self.current_producer = None
-        self.xrpl_client = XRPLClient()
+        self.xrpl_client = xrpl_client or XRPLClient()
         self.iso_generator = ISO20022Generator()
         
         self.init_ui()
@@ -60,9 +60,13 @@ class PaymentFlowWidget(QWidget):
         self.payment_group = self.create_payment_section()
         self.payment_group.setEnabled(False)
         layout.addWidget(self.payment_group)
-        
+
+        # Disable pay button when weight is zero or no producer is selected
+        self.weight_input.valueChanged.connect(self._update_pay_button_state)
+
         layout.addStretch()
-    
+        self._load_daily_price()
+
     def create_measurement_section(self) -> QGroupBox:
         """Create measurement and calculation section"""
         group = QGroupBox("Medición y Cálculo")
@@ -73,7 +77,7 @@ class PaymentFlowWidget(QWidget):
         self.weight_input.setRange(0.01, 10000.0)
         self.weight_input.setDecimals(2)
         self.weight_input.setSuffix(" kg")
-        self.weight_input.setValue(0.0)
+        self.weight_input.setValue(0.01)
         self.weight_input.valueChanged.connect(self.calculate_total)
         layout.addRow("Peso (kg):*", self.weight_input)
         
@@ -142,6 +146,12 @@ class PaymentFlowWidget(QWidget):
         group.setLayout(layout)
         return group
     
+    def _update_pay_button_state(self):
+        """Disable pay button when weight is zero or negative."""
+        self.pay_button.setEnabled(
+            self.weight_input.value() > 0 and self.current_producer is not None
+        )
+
     def clear_layout(self, layout):
         """Recursively clear all widgets and sub-layouts from a layout"""
         if layout is None:
@@ -176,11 +186,34 @@ class PaymentFlowWidget(QWidget):
         # Enable payment sections
         self.measurement_group.setEnabled(True)
         self.payment_group.setEnabled(True)
-        
+
         # Reset inputs
-        self.weight_input.setValue(0.0)
+        self.weight_input.setValue(0.01)
         self.calculate_total()
-    
+        self._update_pay_button_state()
+        self._load_daily_price()
+
+    def _load_daily_price(self):
+        """Load today's reference price from DB if available."""
+        try:
+            from core.database import get_session, close_session
+            from core.models import DailyPrice
+            from datetime import date
+            session = get_session()
+            today = datetime.now(timezone.utc).date()
+            today_dt = datetime.combine(today, datetime.min.time())
+            daily = session.query(DailyPrice).filter_by(price_date=today_dt).first()
+            if daily:
+                self.price_input.setValue(float(daily.price_per_kg))
+                # Visual indicator
+                self.price_input.setToolTip(f"Precio oficial del día: ${float(daily.price_per_kg):.2f}/kg")
+            else:
+                self.price_input.setToolTip("Sin precio oficial configurado — usando valor por defecto")
+        except Exception:
+            pass
+        finally:
+            close_session()
+
     def calculate_total(self):
         """Calculate total payment amount"""
         weight = self.weight_input.value()
@@ -200,8 +233,8 @@ class PaymentFlowWidget(QWidget):
         try:
             token_amount = convert_mxn_to_token(total_mxn, currency)
             self.token_amount_label.setText(f"{token_amount:.6f} {currency}")
-        except:
-            self.token_amount_label.setText("Error en conversión")
+        except (ValueError, KeyError) as e:
+            self.token_amount_label.setText(f"Error: {e}")
     
     def execute_payment(self):
         """Execute XRPL payment and generate ISO messages"""
@@ -251,10 +284,29 @@ class PaymentFlowWidget(QWidget):
             uetr = self.iso_generator.generate_uetr()
             end_to_end_id = self.iso_generator.generate_end_to_end_id()
             
+            # Pre-flight balance check for XRP payments
+            if currency == "XRP":
+                try:
+                    balance_info = self.xrpl_client.get_balance(self.operator.xrpl_address)
+                    available_xrp = balance_info.get('xrp', 0)
+                    required = float(token_amount) + 1.0  # amount + base reserve margin
+                    if available_xrp < required:
+                        QMessageBox.critical(
+                            self,
+                            "Saldo Insuficiente",
+                            f"Saldo insuficiente en wallet.\n\n"
+                            f"Disponible: {available_xrp:.6f} XRP\n"
+                            f"Requerido: {required:.6f} XRP (monto + reserva base)\n\n"
+                            f"No se enviará la transacción."
+                        )
+                        return
+                except Exception:
+                    pass  # Balance check failure must not block — let XRPL reject if needed
+
             # Step 2: Execute XRPL payment
             progress.setLabelText("Enviando transacción XRPL...")
             progress.setValue(2)
-            
+
             # Only XRP is actually sent; others are simulated
             if currency == "XRP":
                 tx_result = self.xrpl_client.send_xrp_payment(
@@ -270,7 +322,7 @@ class PaymentFlowWidget(QWidget):
                 tx_hash = tx_result['hash']
             else:
                 # Simulated payment for other tokens
-                tx_hash = f"SIMULATED_{currency}_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+                tx_hash = f"SIMULATED_{currency}_{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
             
             # Step 3: Save to database
             progress.setLabelText("Guardando registro...")
@@ -287,8 +339,8 @@ class PaymentFlowWidget(QWidget):
                 amount_mxn=total_mxn,
                 producer_id=self.current_producer.id,
                 operator_id=self.operator.id,
-                timestamp=datetime.utcnow(),
-                status=PaymentStatus.COMPLETED if currency == "XRP" else PaymentStatus.PENDING,
+                timestamp=datetime.now(timezone.utc),
+                status=PaymentStatus.COMPLETED if currency == "XRP" else PaymentStatus.SIMULATED,
                 notes=self.notes_input.toPlainText() or None
             )
             session.add(payment)
@@ -300,7 +352,7 @@ class PaymentFlowWidget(QWidget):
                 weight_kg=weight,
                 price_per_kg=self.price_input.value(),
                 total_mxn=total_mxn,
-                delivery_date=datetime.utcnow(),
+                delivery_date=datetime.now(timezone.utc),
                 notes=self.notes_input.toPlainText() or None
             )
             session.add(delivery)
@@ -327,7 +379,7 @@ class PaymentFlowWidget(QWidget):
                 payment_id=payment.id,
                 message_type=MessageType.PACS_008,
                 xml_content=pacs008_xml,
-                created_at=datetime.utcnow()
+                created_at=datetime.now(timezone.utc)
             )
             session.add(pacs008_msg)
             
@@ -337,12 +389,18 @@ class PaymentFlowWidget(QWidget):
                 payment_id=payment.id,
                 message_type=MessageType.CAMT_054,
                 xml_content=camt054_xml,
-                created_at=datetime.utcnow()
+                created_at=datetime.now(timezone.utc)
             )
             session.add(camt054_msg)
             
             session.commit()
-            
+
+            from core.audit import log_audit
+            log_audit(session, self.operator.id, "Pago ejecutado",
+                      f"UETR: {uetr} | Productor: {self.current_producer.name} | "
+                      f"Monto: {token_amount} {currency} | MXN: {total_mxn}")
+            session.commit()
+
             # Success message
             explorer_url = self.xrpl_client.get_testnet_explorer_url(tx_hash) if currency == "XRP" else None
             
@@ -366,7 +424,7 @@ class PaymentFlowWidget(QWidget):
             self.payment_completed.emit(payment)
             
             # Reset form
-            self.weight_input.setValue(0.0)
+            self.weight_input.setValue(0.01)
             self.notes_input.clear()
             
         except Exception as e:
@@ -379,6 +437,15 @@ class PaymentFlowWidget(QWidget):
                 f"- Conexión a XRPL Testnet\n"
                 f"- Dirección XRPL del productor"
             )
+            try:
+                from core.database import get_session as _gs, close_session as _cs
+                from core.audit import log_audit
+                _fail_session = _gs()
+                log_audit(_fail_session, self.operator.id, "Pago fallido", f"Error: {str(e)[:200]}")
+                _fail_session.commit()
+                _cs()
+            except Exception:
+                pass
         finally:
             progress.close()
             close_session()

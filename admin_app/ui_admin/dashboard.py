@@ -12,11 +12,12 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QIcon
 
 from admin_app.ui_admin.styles import ADMIN_STYLESHEET
+from admin_app.ui_admin.metrics_view import MetricsWidget
 from admin_app.ui_admin.user_management import UserManagementWidget
 from admin_app.ui_admin.audit_view import AuditViewWidget
 from core.database import get_session, close_session
 from core.models import User, UserRole, AuditLog
-from datetime import datetime
+from datetime import datetime, timezone
 
 
 class AdminDashboard(QMainWindow):
@@ -54,12 +55,19 @@ class AdminDashboard(QMainWindow):
         main_layout.addWidget(self.tabs)
         
         # Add tabs
+        self.metrics_tab = MetricsWidget()
+        self.tabs.addTab(self.metrics_tab, "📈 Resumen")
+
         self.user_management_tab = UserManagementWidget(self.admin_user)
         self.tabs.addTab(self.user_management_tab, "👥 Gestión de Usuarios")
         
         self.audit_tab = AuditViewWidget()
         self.tabs.addTab(self.audit_tab, "📋 Auditoría y Exportación")
-        
+
+        from admin_app.ui_admin.price_view import DailyPriceWidget
+        self.price_tab = DailyPriceWidget(self.admin_user)
+        self.tabs.addTab(self.price_tab, "💲 Precio del Día")
+
         # Status bar
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
@@ -103,7 +111,7 @@ class AdminDashboard(QMainWindow):
                 user_id=self.admin_user.id,
                 action=action,
                 details=details,
-                timestamp=datetime.utcnow()
+                timestamp=datetime.now(timezone.utc)
             )
             session.add(log_entry)
             session.commit()
@@ -238,5 +246,10 @@ class AdminDashboard(QMainWindow):
     
     def closeEvent(self, event):
         """Handle window close event"""
+        try:
+            from core.database import backup_database
+            backup_database()
+        except Exception:
+            pass
         close_session()
         event.accept()

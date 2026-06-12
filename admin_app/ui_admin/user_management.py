@@ -16,7 +16,7 @@ from core.database import get_session, close_session
 from core.models import User, UserRole, AuditLog
 from core.utils import generate_user_id
 from core.security import hash_password
-from datetime import datetime
+from datetime import datetime, timezone
 
 
 class UserManagementWidget(QWidget):
@@ -137,7 +137,12 @@ class UserManagementWidget(QWidget):
         reset_pwd_btn.setProperty("class", "secondary")
         reset_pwd_btn.clicked.connect(self.reset_password)
         action_layout.addWidget(reset_pwd_btn)
-        
+
+        toggle_active_btn = QPushButton("🚫 Activar/Desactivar")
+        toggle_active_btn.setProperty("class", "secondary")
+        toggle_active_btn.clicked.connect(self.toggle_user_active)
+        action_layout.addWidget(toggle_active_btn)
+
         layout.addLayout(action_layout)
         
         group.setLayout(layout)
@@ -149,11 +154,10 @@ class UserManagementWidget(QWidget):
         xrpl = self.xrpl_input.text().strip()
         
         # Check if all required fields are filled
+        from core.xrpl_client import validate_xrpl_address
         is_valid = (
             len(name) > 0 and
-            len(xrpl) > 0 and
-            xrpl.startswith('r') and
-            len(xrpl) >= 25
+            validate_xrpl_address(xrpl)
         )
         
         self.submit_btn.setEnabled(is_valid)
@@ -178,16 +182,21 @@ class UserManagementWidget(QWidget):
             # Generate user ID
             user_id = generate_user_id(name, xrpl)
             
-            # Check if user ID already exists
+            # Check if user ID already exists; try suffix on collision
             session = get_session()
-            existing = session.query(User).filter_by(username=user_id).first()
-            
-            if existing:
+            base_id = user_id
+            for suffix in ["", "-2", "-3", "-4", "-5", "-6", "-7", "-8", "-9"]:
+                candidate = f"{base_id}{suffix}"
+                existing = session.query(User).filter_by(username=candidate).first()
+                if not existing:
+                    user_id = candidate
+                    break
+            else:
                 QMessageBox.warning(
                     self,
-                    "Usuario Duplicado",
-                    f"Ya existe un usuario con el ID: {user_id}\n\n"
-                    "Por favor, verifique los datos ingresados."
+                    "ID Duplicado",
+                    f"No se pudo generar un ID único para este usuario.\n"
+                    "Por favor, intente con datos ligeramente diferentes."
                 )
                 return
             
@@ -199,7 +208,7 @@ class UserManagementWidget(QWidget):
                 full_name=name,
                 date_of_birth=datetime.combine(dob, datetime.min.time()),
                 xrpl_address=xrpl,
-                created_at=datetime.utcnow(),
+                created_at=datetime.now(timezone.utc),
                 is_active=True
             )
             
@@ -210,7 +219,7 @@ class UserManagementWidget(QWidget):
                 user_id=self.admin_user.id,
                 action="Creación de usuario",
                 details=f"Usuario creado: {user_id} ({name})",
-                timestamp=datetime.utcnow()
+                timestamp=datetime.now(timezone.utc)
             )
             session.add(log_entry)
             
@@ -325,7 +334,7 @@ class UserManagementWidget(QWidget):
                         user_id=self.admin_user.id,
                         action="Reseteo de contraseña",
                         details=f"Contraseña reseteada para: {user_id}",
-                        timestamp=datetime.utcnow()
+                        timestamp=datetime.now(timezone.utc)
                     )
                     session.add(log_entry)
                     
@@ -342,6 +351,66 @@ class UserManagementWidget(QWidget):
                     self,
                     "Error",
                     f"Error al resetear contraseña:\n{str(e)}"
+                )
+            finally:
+                close_session()
+
+    def toggle_user_active(self):
+        """Toggle active status of selected user"""
+        selected_rows = self.user_table.selectedItems()
+        if not selected_rows:
+            QMessageBox.warning(
+                self,
+                "Selección Requerida",
+                "Por favor, seleccione un usuario de la tabla."
+            )
+            return
+
+        row = selected_rows[0].row()
+        user_id = self.user_table.item(row, 0).text()
+        user_name = self.user_table.item(row, 1).text()
+        current_status = self.user_table.item(row, 5).text()
+        action_label = "desactivar" if current_status == "Activo" else "activar"
+
+        reply = QMessageBox.question(
+            self,
+            "Confirmar Cambio",
+            f"¿Está seguro que desea {action_label} al usuario:\n\n"
+            f"{user_name} ({user_id})?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+
+        if reply == QMessageBox.Yes:
+            try:
+                session = get_session()
+                user = session.query(User).filter_by(username=user_id).first()
+
+                if user:
+                    user.is_active = not user.is_active
+                    new_status = "activado" if user.is_active else "desactivado"
+
+                    log_entry = AuditLog(
+                        user_id=self.admin_user.id,
+                        action=f"Usuario {new_status}",
+                        details=f"Usuario {action_label}do: {user_id} ({user_name})",
+                        timestamp=datetime.now(timezone.utc)
+                    )
+                    session.add(log_entry)
+                    session.commit()
+
+                    QMessageBox.information(
+                        self,
+                        "Estado Actualizado",
+                        f"El usuario {user_name} ha sido {new_status} exitosamente."
+                    )
+                    self.load_users()
+
+            except Exception as e:
+                QMessageBox.critical(
+                    self,
+                    "Error",
+                    f"Error al cambiar estado:\n{str(e)}"
                 )
             finally:
                 close_session()

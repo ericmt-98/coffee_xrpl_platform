@@ -227,9 +227,9 @@ class AuthFlowDialog(QDialog):
             if not user:
                 QMessageBox.warning(
                     self,
-                    "Usuario No Encontrado",
-                    f"No se encontró un usuario con el ID: {user_id}\n\n"
-                    "Por favor, verifique su ID o contacte al administrador."
+                    "Credenciales Incorrectas",
+                    "ID de usuario o credenciales incorrectos.\n\n"
+                    "Verifique sus datos o contacte al administrador."
                 )
                 return
             
@@ -409,8 +409,7 @@ class AuthFlowDialog(QDialog):
                 QMessageBox.warning(
                     self,
                     "Seed Inválido",
-                    "El formato del seed XRPL no es válido.\n\n"
-                    "Debe comenzar con 's' y tener al menos 25 caracteres."
+                    "El formato del seed XRPL no es válido."
                 )
                 return
             
@@ -450,6 +449,21 @@ class AuthFlowDialog(QDialog):
                 close_session()
             
             self.xrpl_seed = seed  # Store in RAM only
+
+            # Log successful operator login to audit trail
+            try:
+                from core.database import get_session, close_session
+                from core.audit import log_audit
+                audit_session = get_session()
+                try:
+                    log_audit(audit_session, self.user_db_id, "Inicio de sesión en Pagos",
+                              f"Usuario: {self.username}")
+                    audit_session.commit()
+                finally:
+                    close_session()
+            except Exception:
+                pass  # audit failure must not block login
+
             self.accept()
             
         except Exception as e:

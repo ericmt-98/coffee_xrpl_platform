@@ -14,7 +14,7 @@ from PySide6.QtGui import QPixmap
 
 from core.database import get_session, close_session
 from core.models import Producer
-from datetime import datetime
+from datetime import datetime, timezone
 import shutil
 import os
 
@@ -167,8 +167,58 @@ class ProducerManagementWidget(QWidget):
             image_label.setAlignment(Qt.AlignCenter)
             self.right_layout.addWidget(image_label)
         
+        # Historical aggregates
+        from sqlalchemy import func
+        from core.models import Payment, Delivery, PaymentStatus
+        from core.utils import format_currency
+
+        try:
+            stats_session = get_session()
+
+            # Count and sum payments (excluding FAILED)
+            payment_stats = stats_session.query(
+                func.count(Payment.id).label('count'),
+                func.sum(Payment.amount_mxn).label('total_mxn'),
+            ).filter(
+                Payment.producer_id == producer.id,
+                Payment.status != PaymentStatus.FAILED
+            ).first()
+
+            # Sum weight from deliveries
+            weight_stats = stats_session.query(
+                func.sum(Delivery.weight_kg).label('total_kg'),
+            ).join(Payment).filter(
+                Payment.producer_id == producer.id,
+                Payment.status != PaymentStatus.FAILED
+            ).first()
+
+            # Last payment date
+            last_payment = stats_session.query(Payment.timestamp).filter(
+                Payment.producer_id == producer.id,
+                Payment.status != PaymentStatus.FAILED
+            ).order_by(Payment.timestamp.desc()).first()
+
+            pay_count = payment_stats.count or 0
+            total_mxn = float(payment_stats.total_mxn or 0)
+            total_kg = float(weight_stats.total_kg or 0)
+            last_date = last_payment.timestamp.strftime("%d/%m/%Y") if last_payment else "—"
+
+            hist_group = QGroupBox("Historial de Entregas")
+            hist_layout = QFormLayout()
+            hist_layout.addRow("Total entregas:", QLabel(str(pay_count)))
+            hist_layout.addRow("Total kg:", QLabel(f"{total_kg:.2f} kg"))
+            hist_layout.addRow("Total pagado:", QLabel(format_currency(total_mxn, "MXN")))
+            hist_layout.addRow("Último pago:", QLabel(last_date))
+            hist_group.setLayout(hist_layout)
+            self.right_layout.addWidget(hist_group)
+
+        except Exception:
+            pass
+        finally:
+            close_session()
+
         self.right_layout.addStretch()
-        
+
         # Select button
         select_btn = QPushButton("✓ Seleccionar para Pago")
         select_btn.setProperty("class", "large")
@@ -259,11 +309,12 @@ class ProducerManagementWidget(QWidget):
                 )
                 return
             
-            if not xrpl.startswith('r') or len(xrpl) < 25:
+            from core.xrpl_client import validate_xrpl_address
+            if not validate_xrpl_address(xrpl):
                 QMessageBox.warning(
                     self,
                     "Dirección Inválida",
-                    "La dirección XRPL no tiene un formato válido."
+                    "La dirección XRPL no es válida. Verifique el checksum."
                 )
                 return
             
@@ -298,13 +349,18 @@ class ProducerManagementWidget(QWidget):
                 xrpl_address=xrpl,
                 contact_info=contact if contact else None,
                 id_image_path=image_path,
-                created_at=datetime.utcnow(),
+                created_at=datetime.now(timezone.utc),
                 is_active=True
             )
             
             session.add(new_producer)
             session.commit()
-            
+
+            from core.audit import log_audit
+            log_audit(session, None, "Productor creado",
+                      f"Nombre: {name} | XRPL: {xrpl}")
+            session.commit()
+
             QMessageBox.information(
                 self,
                 "Productor Creado",

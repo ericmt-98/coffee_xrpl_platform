@@ -146,15 +146,12 @@ def get_or_create_encryption_key() -> bytes:
 
 
 def validate_xrpl_seed(seed: str) -> bool:
-    """
-    Basic validation for XRPL seed format.
-    
-    Args:
-        seed: XRPL seed string
-        
-    Returns:
-        True if format appears valid
-    """
-    # XRPL seeds start with 's' and are typically 29 characters
-    # This is a basic check; actual validation happens in xrpl_client
-    return seed.startswith('s') and len(seed) >= 25
+    """Validate XRPL seed using cryptographic decode."""
+    if not seed:
+        return False
+    try:
+        from xrpl.core.keypairs import derive_keypair
+        derive_keypair(seed)
+        return True
+    except Exception:
+        return False
