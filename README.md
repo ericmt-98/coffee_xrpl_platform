@@ -2,7 +2,29 @@
 
 Plataforma de escritorio para la gestión de pagos a productores de café, construida sobre el **XRP Ledger**. Combina liquidación blockchain con mensajería financiera **ISO 20022** y una interfaz de escritorio completa en PySide6.
 
-> Proyecto educativo/profesional. Configurado sobre XRPL Testnet.
+---
+
+### El problema
+
+En México hay 234,000 productores de café. La mayoría cobra a través de intermediarios que absorben entre el 30 y el 50% del valor. El dinero llega tarde, en efectivo, sin registro formal — y sin registro formal, no hay historial crediticio, ni acceso a financiamiento, ni trazabilidad para el comprador internacional.
+
+Este sistema cierra ese ciclo: el operador registra la entrega, ejecuta el pago directamente al productor vía XRPL en segundos, y genera automáticamente los documentos financieros que el sistema bancario formal entiende.
+
+### Por qué ISO 20022 es la pieza clave
+
+ISO 20022 es el estándar internacional de mensajería financiera — el idioma de SWIFT, SPEI 2.0 y los sistemas de liquidación globales. Sin él, un pago en XRPL es solo un hash en blockchain: válido en ledger, opaco para cualquier banco, auditor o programa gubernamental.
+
+Con él, cada pago genera un `pacs.008` (instrucción de transferencia), un `pacs.002` (confirmación de estado) y un `camt.053` (estado de cuenta conciliable). Eso significa que la cooperativa puede presentar historial financiero verificable para acceder a crédito (FIRA, FND), conectar el flujo a SPEI vía banco patrocinador, e integrar con compradores internacionales que exigen trazabilidad de pago vía SWIFT — sin reescribir el núcleo del sistema.
+
+La cooperativa no empieza como fintech. Pero acumula, desde el primer pago, la infraestructura de datos para serlo.
+
+### Para quién es este proyecto
+
+**Cooperativas cafetaleras** que quieren pagar directamente a productores, eliminar intermediarios, y construir un historial financiero formal que les abra acceso a crédito y mercados internacionales.
+
+**Desarrolladores y estudiantes** que quieren aprender cómo se construye un sistema de pagos real: blockchain + estándar bancario global + seguridad + base de datos, en código legible sin abstracciones innecesarias. Cada campo del `pacs.008` generado por este sistema es el mismo que aparece en la documentación oficial de SWIFT — no es simulación, es el estándar real.
+
+> Configurado sobre XRPL Testnet. Para producción: conectar a mainnet y banco patrocinador SPEI.
 
 ---
 
