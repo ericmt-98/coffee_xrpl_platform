@@ -29,10 +29,13 @@ class UserRole(enum.Enum):
 
 class PaymentStatus(enum.Enum):
     """Payment status enumeration"""
-    PENDING = "pending"
+    PENDING   = "pending"
     COMPLETED = "completed"
-    FAILED = "failed"
-    SIMULATED = "simulated"
+    FAILED    = "failed"
+    SIMULATED = "simulated"   # pagos no-XRP (tokens simulados)
+    ESCROWED  = "escrowed"    # fondos bloqueados en XRPL escrow, pendiente de calidad
+    REJECTED  = "rejected"    # calidad rechazada; reembolso on-ledger pendiente de vencimiento
+    REFUNDED  = "refunded"    # EscrowCancel ejecutado; fondos devueltos al operador
 
 
 class User(Base):
@@ -94,6 +97,29 @@ class Payment(Base):
     operator = relationship("User", back_populates="payments")
     delivery = relationship("Delivery", back_populates="payment", uselist=False)
     iso_messages = relationship("IsoMessage", back_populates="payment")
+
+
+class EscrowDetail(Base):
+    """XRPL escrow details for quality-conditional payments
+
+    NOTE (SQLite): esta tabla se crea con create_all(); los valores nuevos de
+    enum se almacenan como texto en SQLite, no requieren ALTER TABLE.
+    """
+    __tablename__ = "escrow_details"
+
+    id              = Column(Integer, primary_key=True)
+    payment_id      = Column(Integer, ForeignKey("payments.id"), nullable=False, unique=True)
+    offer_sequence  = Column(Integer, nullable=False)
+    condition_hex   = Column(String(200), nullable=False)
+    fulfillment_hex = Column(String(200), nullable=False)
+    cancel_after    = Column(DateTime, nullable=False)
+    create_tx_hash  = Column(String(100), nullable=False)
+    finish_tx_hash  = Column(String(100), nullable=True)
+    cancel_tx_hash  = Column(String(100), nullable=True)
+    quality_notes   = Column(Text, nullable=True)
+    resolved_at     = Column(DateTime, nullable=True)
+
+    payment = relationship("Payment", backref="escrow_detail")
 
 
 class Delivery(Base):
@@ -159,3 +185,12 @@ class DailyPrice(Base):
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     set_by_user = relationship("User", foreign_keys=[set_by_user_id])
+
+
+class AppConfig(Base):
+    """Key/value store for local app configuration (values stored encrypted)."""
+    __tablename__ = "app_config"
+
+    id    = Column(Integer, primary_key=True)
+    key   = Column(String(100), unique=True, nullable=False)
+    value = Column(Text, nullable=True)   # Fernet-encrypted

@@ -37,13 +37,18 @@ def main():
     auth_dialog = AuthFlowDialog()
     
     if auth_dialog.exec() == AuthFlowDialog.Accepted:
-        # Authentication successful, show dashboard
-        if auth_dialog.authenticated_user and auth_dialog.xrpl_seed:
+        # Authentication successful — either seed or Xaman path
+        user         = auth_dialog.authenticated_user
+        xrpl_seed    = auth_dialog.xrpl_seed    # None in Xaman mode
+        xaman_client = auth_dialog.xaman_client  # None in seed mode
+
+        if user and (xrpl_seed or xaman_client):
             xrpl_client = XRPLClient()
             dashboard = PaymentDashboard(
-                auth_dialog.authenticated_user,
-                auth_dialog.xrpl_seed,
-                xrpl_client=xrpl_client
+                user,
+                xrpl_seed=xrpl_seed,
+                xrpl_client=xrpl_client,
+                xaman_client=xaman_client,
             )
             dashboard.show()
             sys.exit(app.exec())

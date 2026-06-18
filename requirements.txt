@@ -14,6 +14,7 @@ lxml>=4.9.0
 python-dotenv>=1.0.0
 openpyxl>=3.1.0  # Excel export
 Pillow>=10.0.0   # Image handling
+requests>=2.31.0  # HTTP client for Xaman backend
 
 # Development
 pytest>=7.4.0

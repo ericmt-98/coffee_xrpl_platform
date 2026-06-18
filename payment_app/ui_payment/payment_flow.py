@@ -22,17 +22,19 @@ from datetime import datetime, timezone
 
 class PaymentFlowWidget(QWidget):
     """Widget for processing payments to producers"""
-    
+
     payment_completed = Signal(Payment)
-    
-    def __init__(self, operator: User, xrpl_seed: str, xrpl_client=None):
+
+    def __init__(self, operator: User, xrpl_seed: str = None,
+                 xrpl_client=None, xaman_client=None):
         super().__init__()
-        self.operator = operator
-        self.xrpl_seed = xrpl_seed
+        self.operator      = operator
+        self.xrpl_seed     = xrpl_seed      # None when Xaman mode
+        self.xaman_client  = xaman_client   # None when seed mode
         self.current_producer = None
-        self.xrpl_client = xrpl_client or XRPLClient()
+        self.xrpl_client   = xrpl_client or XRPLClient()
         self.iso_generator = ISO20022Generator()
-        
+
         self.init_ui()
     
     def init_ui(self):
@@ -337,7 +339,14 @@ class PaymentFlowWidget(QWidget):
                 progress.close()
             return
 
-        # Direct payment — background thread, non-blocking
+        # Xaman direct payment — sign in dialog, then persist in background
+        if self.xaman_client and currency == "XRP":
+            self._execute_xaman_payment(
+                uetr, end_to_end_id, currency, token_amount, total_mxn, weight
+            )
+            return
+
+        # Legacy seed direct payment — background thread, non-blocking
         self._progress = QProgressDialog("⏳ Conectando con XRPL Testnet...", None, 0, 0, self)
         self._progress.setWindowModality(Qt.WindowModal)
         self._progress.setMinimumDuration(0)
@@ -361,6 +370,168 @@ class PaymentFlowWidget(QWidget):
         self._payment_worker.finished_ok.connect(self._on_payment_ok)
         self._payment_worker.failed.connect(self._on_payment_failed)
         self._payment_worker.start()
+
+    def _execute_xaman_payment(self, uetr, end_to_end_id, currency,
+                               token_amount, total_mxn, weight_kg):
+        """Sign an XRP payment via Xaman, then persist in background."""
+        from xrpl.utils import xrp_to_drops
+        from decimal import Decimal
+        from payment_app.ui_payment.xaman_sign_dialog import XamanSignDialog
+
+        # Verify balance before signing
+        try:
+            balance_info = self.xrpl_client.get_balance(self.operator.xrpl_address)
+            available    = balance_info.get("xrp", 0)
+            required     = float(token_amount) + 1.0
+            if available < required:
+                QMessageBox.warning(
+                    self, "Saldo Insuficiente",
+                    f"Saldo disponible: {available:.6f} XRP\n"
+                    f"Requerido: {required:.6f} XRP (monto + reserva base)"
+                )
+                return
+        except Exception as e:
+            QMessageBox.warning(self, "Error de saldo", str(e))
+            return
+
+        # Build unsigned txjson (Xaman will fill Sequence, Fee, etc.)
+        drops   = str(xrp_to_drops(Decimal(str(token_amount))))
+        memo_hex = f"Coffee Payment - UETR: {uetr}".encode().hex()
+        txjson  = {
+            "TransactionType": "Payment",
+            "Account":         self.operator.xrpl_address,
+            "Destination":     self.current_producer.xrpl_address,
+            "Amount":          drops,
+            "Memos": [{"Memo": {"MemoData": memo_hex}}],
+        }
+
+        instruction = (
+            f"Pago a {self.current_producer.name}\n"
+            f"{token_amount:.6f} XRP — {format_currency(total_mxn, 'MXN')}"
+        )
+
+        self.pay_button.setEnabled(False)
+        self.pay_button.setText("⏳ Esperando firma…")
+
+        dialog = XamanSignDialog(
+            xaman_client=self.xaman_client,
+            txjson=txjson,
+            identifier=uetr,
+            instruction=instruction,
+            expected_account=self.operator.xrpl_address,
+            kind="payment",
+            parent=self,
+        )
+
+        signed = dialog.exec() and dialog.result_data["ok"]
+        self.pay_button.setEnabled(True)
+        self.pay_button.setText("💰 EJECUTAR PAGO")
+
+        if not signed:
+            reason = dialog.result_data.get("reason", "cancelled")
+            msgs = {
+                "cancelled":    "El operador canceló la firma en Xaman.",
+                "expired":      "La solicitud de firma expiró.",
+                "timeout":      "Tiempo de espera agotado.",
+                "wrong_account": "Wallet incorrecta en Xaman.",
+            }
+            QMessageBox.warning(self, "Pago no completado",
+                                msgs.get(reason, "No se firmó la transacción."))
+            try:
+                from core.audit import log_audit
+                _s = get_session()
+                log_audit(_s, self.operator.id, "Pago no firmado (Xaman)",
+                          f"UETR: {uetr} | Razón: {reason}")
+                _s.commit()
+                close_session()
+            except Exception:
+                pass
+            return
+
+        tx_hash = dialog.result_data["txid"]
+
+        # Persist in background (same as legacy path, minus the XRPL send)
+        self._progress = QProgressDialog("⏳ Guardando pago...", None, 0, 0, self)
+        self._progress.setWindowModality(Qt.WindowModal)
+        self._progress.setMinimumDuration(0)
+        self._progress.setWindowTitle("Guardando")
+        self._progress.show()
+
+        from shared_ui.workers import FunctionWorker
+        self._payment_worker = FunctionWorker(
+            self._persist_payment,
+            uetr, end_to_end_id, currency, token_amount, total_mxn,
+            self.current_producer.id, self.current_producer.name,
+            self.current_producer.xrpl_address,
+            self.operator.id, self.operator.full_name, self.operator.xrpl_address,
+            weight_kg, self.price_input.value(),
+            self.notes_input.toPlainText(),
+            tx_hash,
+        )
+        self._payment_worker.finished_ok.connect(self._on_payment_ok)
+        self._payment_worker.failed.connect(self._on_payment_failed)
+        self._payment_worker.start()
+
+    def _persist_payment(self, uetr, end_to_end_id, currency, token_amount, total_mxn,
+                         producer_id, producer_name, producer_address,
+                         operator_id, operator_name, operator_address,
+                         weight_kg, price_per_kg, notes, tx_hash) -> dict:
+        """Background: persist an already-signed payment (Xaman path)."""
+        from core.database import get_session as _gs, close_session as _cs
+        from core.models import Payment as _Pay, Delivery as _Del, IsoMessage as _Iso
+        from core.models import PaymentStatus as _PS, MessageType as _MT
+        from core.iso_generator import ISO20022Generator
+        from core.audit import log_audit as _log
+        from datetime import datetime, timezone
+
+        iso_gen = ISO20022Generator()
+        session = _gs()
+        try:
+            payment = _Pay(
+                uetr=uetr, xrpl_tx_hash=tx_hash,
+                amount=token_amount, currency=currency, amount_mxn=total_mxn,
+                producer_id=producer_id, operator_id=operator_id,
+                timestamp=datetime.now(timezone.utc),
+                status=_PS.COMPLETED,
+                notes=notes or None,
+            )
+            session.add(payment)
+            session.flush()
+
+            session.add(_Del(
+                payment_id=payment.id, weight_kg=weight_kg,
+                price_per_kg=price_per_kg, total_mxn=total_mxn,
+                delivery_date=datetime.now(timezone.utc), notes=notes or None,
+            ))
+
+            pd = {
+                "uetr": uetr, "end_to_end_id": end_to_end_id,
+                "amount": token_amount, "currency": currency,
+                "debtor_name": operator_name, "debtor_account": operator_address,
+                "creditor_name": producer_name, "creditor_account": producer_address,
+                "xrpl_tx_hash": tx_hash,
+            }
+            session.add(_Iso(payment_id=payment.id, message_type=_MT.PACS_008,
+                             xml_content=iso_gen.generate_pacs008(pd)))
+            session.add(_Iso(payment_id=payment.id, message_type=_MT.PACS_002,
+                             xml_content=iso_gen.generate_pacs002(pd, "tesSUCCESS")))
+            session.add(_Iso(payment_id=payment.id, message_type=_MT.CAMT_054,
+                             xml_content=iso_gen.generate_camt054(pd)))
+            session.commit()
+
+            _log(session, operator_id, "Pago ejecutado (Xaman)",
+                 f"UETR: {uetr} | Productor: {producer_name} | "
+                 f"Monto: {token_amount} {currency} | MXN: {total_mxn}")
+            session.commit()
+
+            return {
+                "payment_id": payment.id, "uetr": uetr, "tx_hash": tx_hash,
+                "token_amount": token_amount, "currency": currency,
+                "total_mxn": total_mxn,
+                "explorer_url": f"https://testnet.xrpl.org/transactions/{tx_hash}",
+            }
+        finally:
+            _cs()
 
     def _do_payment(self, uetr, end_to_end_id, currency, token_amount, total_mxn,
                     producer_id, producer_name, producer_address,

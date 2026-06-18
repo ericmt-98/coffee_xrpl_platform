@@ -20,12 +20,14 @@ from core.xrpl_client import XRPLClient
 
 class PaymentDashboard(QMainWindow):
     """Main dashboard window for Payment application"""
-    
-    def __init__(self, operator: User, xrpl_seed: str, xrpl_client=None):
+
+    def __init__(self, operator: User, xrpl_seed: str = None,
+                 xrpl_client=None, xaman_client=None):
         super().__init__()
-        self.operator = operator
-        self.xrpl_seed = xrpl_seed  # Stored in RAM only
-        self._xrpl_client = xrpl_client or XRPLClient()
+        self.operator      = operator
+        self.xrpl_seed     = xrpl_seed      # None when Xaman mode
+        self.xaman_client  = xaman_client   # None when seed mode
+        self._xrpl_client  = xrpl_client or XRPLClient()
         self.init_ui()
     
     def init_ui(self):
@@ -67,7 +69,11 @@ class PaymentDashboard(QMainWindow):
         self.tabs = QTabWidget()
         
         # Payment tab
-        self.payment_widget = PaymentFlowWidget(self.operator, self.xrpl_seed, xrpl_client=self._xrpl_client)
+        self.payment_widget = PaymentFlowWidget(
+            self.operator, self.xrpl_seed,
+            xrpl_client=self._xrpl_client,
+            xaman_client=self.xaman_client,
+        )
         self.payment_widget.payment_completed.connect(self.on_payment_completed)
         self.tabs.addTab(self.payment_widget, "💰 Realizar Pago")
         
@@ -75,8 +81,10 @@ class PaymentDashboard(QMainWindow):
         self.history_widget = HistoryViewWidget(self.operator)
         self.tabs.addTab(self.history_widget, "📋 Historial")
 
-        # Escrows tab
-        self.escrow_widget = EscrowManagementWidget(self.operator, self.xrpl_seed)
+        # Escrows tab (seed required; in Xaman mode show a placeholder)
+        self.escrow_widget = EscrowManagementWidget(
+            self.operator, self.xrpl_seed  # None when Xaman mode — widget handles gracefully
+        )
         self.tabs.addTab(self.escrow_widget, "⏳ Escrows")
 
         right_layout.addWidget(self.tabs)
@@ -179,12 +187,11 @@ class PaymentDashboard(QMainWindow):
         reply = QMessageBox.question(
             self,
             "Confirmar Cierre de Sesión",
-            "¿Está seguro que desea cerrar sesión?\n\n"
-            "Su clave privada XRPL será eliminada de la memoria.",
+            "¿Está seguro que desea cerrar sesión?",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No
         )
-        
+
         if reply == QMessageBox.Yes:
             try:
                 from core.database import get_session, close_session
@@ -199,12 +206,12 @@ class PaymentDashboard(QMainWindow):
             except Exception:
                 pass
 
-            # Clear sensitive data
-            self.xrpl_seed = None
+            self.xrpl_seed    = None
+            self.xaman_client = None
             self.close()
-    
+
     def closeEvent(self, event):
         """Handle window close event"""
-        # Clear sensitive data from memory
-        self.xrpl_seed = None
+        self.xrpl_seed    = None
+        self.xaman_client = None
         event.accept()

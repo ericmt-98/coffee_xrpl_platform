@@ -20,41 +20,53 @@ from shared_ui.components import StepIndicator
 
 class AuthFlowDialog(QDialog):
     """Three-step authentication dialog for payment app"""
-    
+
     def __init__(self):
         super().__init__()
         self.authenticated_user = None
-        self.xrpl_seed = None  # Stored in RAM only
-        
+        self.xrpl_seed   = None   # Stored in RAM only (legacy path)
+        self.xaman_client = None  # Set when Xaman path succeeds
+
         # State stored after ID verification to avoid detached session issues
         self.user_db_id = None
         self.user_xrpl_address = None
         self.user_password_hash = None
         self.username = None
-        
+
         self.init_ui()
     
     def init_ui(self):
         """Initialize the user interface"""
         self.setWindowTitle("Coffee XRPL Platform - Pagos")
-        self.setFixedSize(600, 600)
+        self.setFixedSize(600, 620)
         self.setStyleSheet(PAYMENT_STYLESHEET)
-        
+
         layout = QVBoxLayout(self)
         layout.setSpacing(20)
         layout.setContentsMargins(40, 40, 40, 40)
-        
-        # Logo/Title
+
+        # Top bar: title + settings gear
+        top_bar = QHBoxLayout()
+
+        title_col = QVBoxLayout()
         title = QLabel("☕ Coffee XRPL Platform")
         title.setProperty("class", "header")
         title.setAlignment(Qt.AlignCenter)
-        layout.addWidget(title)
-        
+        title_col.addWidget(title)
         subtitle = QLabel("Sistema de Pagos a Productores")
         subtitle.setProperty("class", "subheader")
         subtitle.setAlignment(Qt.AlignCenter)
-        layout.addWidget(subtitle)
-        
+        title_col.addWidget(subtitle)
+        top_bar.addLayout(title_col, 1)
+
+        settings_btn = QPushButton("⚙️")
+        settings_btn.setToolTip("Ajustes de conexión Xaman")
+        settings_btn.setProperty("class", "secondary")
+        settings_btn.setFixedSize(36, 36)
+        settings_btn.clicked.connect(self._open_settings)
+        top_bar.addWidget(settings_btn, 0, Qt.AlignTop)
+
+        layout.addLayout(top_bar)
         layout.addSpacing(10)
 
         # Step progress indicator
@@ -365,13 +377,12 @@ class AuthFlowDialog(QDialog):
                     close_session()
                 
                 # Proceed to step 3
-                self.stack.setCurrentIndex(2)
-                self.seed_input.setFocus()
-                
+                self._goto_step3()
+
             else:
                 # Verify existing password
                 password = self.password_input.text()
-                
+
                 if not password:
                     QMessageBox.warning(
                         self,
@@ -379,7 +390,7 @@ class AuthFlowDialog(QDialog):
                         "Por favor, ingrese su contraseña."
                     )
                     return
-                
+
                 if not verify_password(self.user_password_hash, password):
                     QMessageBox.warning(
                         self,
@@ -387,10 +398,9 @@ class AuthFlowDialog(QDialog):
                         "La contraseña ingresada es incorrecta."
                     )
                     return
-                
+
                 # Proceed to step 3
-                self.stack.setCurrentIndex(2)
-                self.seed_input.setFocus()
+                self._goto_step3()
                 
         except Exception as e:
             QMessageBox.critical(
@@ -445,35 +455,9 @@ class AuthFlowDialog(QDialog):
                 )
                 return
             
-            # Authentication successful - map back to User object for the main app
-            session = get_session()
-            try:
-                self.authenticated_user = session.query(User).filter_by(id=self.user_db_id).first()
-                # Use expunge to keep it available after close if needed, 
-                # but better to let the main window manage its own session
-                if self.authenticated_user:
-                    session.expunge(self.authenticated_user)
-                    from sqlalchemy.orm import make_transient
-                    make_transient(self.authenticated_user)
-            finally:
-                close_session()
-            
-            self.xrpl_seed = seed  # Store in RAM only
-
-            # Log successful operator login to audit trail
-            try:
-                from core.audit import log_audit
-                audit_session = get_session()
-                try:
-                    log_audit(audit_session, self.user_db_id, "Inicio de sesión en Pagos",
-                              f"Usuario: {self.username}")
-                    audit_session.commit()
-                finally:
-                    close_session()
-            except Exception:
-                pass  # audit failure must not block login
-
-            self.accept()
+            self.xrpl_seed    = seed   # Store in RAM only
+            self.xaman_client = None   # legacy path — no Xaman client
+            self._complete_login()
             
         except Exception as e:
             QMessageBox.critical(
@@ -490,8 +474,97 @@ class AuthFlowDialog(QDialog):
         else:
             self.seed_input.setEchoMode(QLineEdit.Password)
             self.show_seed_checkbox.setText("👁 Mostrar")
-    
+
+    # ── Xaman / Settings helpers ──────────────────────────────────────────────
+
+    def _open_settings(self):
+        from payment_app.ui_payment.settings_dialog import SettingsDialog
+        SettingsDialog(self).exec()
+
+    def _goto_step3(self):
+        """Transition to step 3: Xaman Sign In or legacy seed input."""
+        from core.config_store import is_xaman_enabled
+        if is_xaman_enabled():
+            self._xaman_signin()
+        else:
+            self.stack.setCurrentIndex(2)
+            self.seed_input.setFocus()
+
+    def _xaman_signin(self):
+        """Authenticate operator via Xaman Sign In instead of seed input."""
+        from core.xaman_client import XamanClient
+        from core.config_store import get_config
+        from payment_app.ui_payment.xaman_sign_dialog import XamanSignDialog
+
+        client = XamanClient.from_config()
+        if client is None:
+            QMessageBox.warning(
+                self,
+                "Xaman no configurado",
+                "No se encontraron ajustes de conexión.\n\n"
+                "Use el botón ⚙️ para configurar la URL del backend y la Device Key."
+            )
+            return
+
+        dialog = XamanSignDialog(
+            xaman_client=client,
+            txjson={"TransactionType": "SignIn"},
+            identifier=f"signin-{self.username}",
+            instruction=f"Conectar wallet de {self.username} a Coffee XRPL Platform",
+            expected_account=self.user_xrpl_address or "",
+            kind="signin",
+            parent=self,
+        )
+
+        if dialog.exec() and dialog.result_data["ok"]:
+            # Authentication successful via Xaman
+            self.xaman_client = client
+            self.xrpl_seed    = None  # no seed in Xaman mode
+            self._complete_login()
+        else:
+            reason = dialog.result_data.get("reason", "cancelled")
+            msgs = {
+                "cancelled":    "El inicio de sesión fue cancelado en Xaman.",
+                "expired":      "La solicitud expiró. Intente nuevamente.",
+                "timeout":      "Tiempo de espera agotado. Intente nuevamente.",
+                "wrong_account": "La wallet conectada no coincide con la registrada.",
+                "backend_error": "Error de conexión con el backend.",
+            }
+            QMessageBox.warning(self, "No autenticado",
+                                msgs.get(reason, "No se completó el inicio de sesión."))
+
+    def _complete_login(self):
+        """Shared finalisation after successful step 3 (seed or Xaman)."""
+        session = get_session()
+        try:
+            self.authenticated_user = session.query(User).filter_by(
+                id=self.user_db_id
+            ).first()
+            if self.authenticated_user:
+                session.expunge(self.authenticated_user)
+                from sqlalchemy.orm import make_transient
+                make_transient(self.authenticated_user)
+        finally:
+            close_session()
+
+        try:
+            from core.audit import log_audit
+            audit_session = get_session()
+            try:
+                method = "Xaman" if self.xaman_client else "Seed"
+                log_audit(audit_session, self.user_db_id,
+                          "Inicio de sesión en Pagos",
+                          f"Usuario: {self.username} | Método: {method}")
+                audit_session.commit()
+            finally:
+                close_session()
+        except Exception:
+            pass
+
+        self.accept()
+
     def closeEvent(self, event):
         """Handle window close - clear sensitive data"""
-        self.xrpl_seed = None
+        self.xrpl_seed    = None
+        self.xaman_client = None
         event.accept()
