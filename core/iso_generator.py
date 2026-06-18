@@ -404,58 +404,99 @@ class ISO20022Generator:
             encoding='UTF-8'
         ).decode('utf-8')
 
-    def generate_pacs002(self, payment_data: Dict[str, Any], xrpl_result_code: str) -> str:
+    def generate_pacs002(self, payment_data: Dict[str, Any], xrpl_result_code: str = "tesSUCCESS",
+                         escrow_fulfillment: str = None) -> str:
+        """Generate pacs.002.001.10 - FIToFIPaymentStatusReport (simplified educational subset).
+
+        Maps XRPL transaction result codes to ISO 20022 status codes:
+          tesSUCCESS          -> ACSC (AcceptedSettlementCompleted)
+          tec* (any tec code) -> RJCT (Rejected) with XRPL code in StsRsnInf
+          anything else       -> PDNG (Pending)
+
+        When escrow_fulfillment is provided and status is ACSC, the fulfillment hex
+        is embedded in SplmtryData. This makes the ISO message the literal release
+        key for the XRPL escrow — whoever holds this message can call EscrowFinish.
+
+        Args:
+            payment_data: dict with keys: uetr, end_to_end_id, amount, currency,
+                          debtor_name, creditor_name, xrpl_tx_hash,
+                          rejection_reason (optional, used for RJCT)
+            xrpl_result_code: XRPL engine result string
+            escrow_fulfillment: hex fulfillment string (for escrow ACSC messages only)
+
+        Returns:
+            XML string
         """
-        Generate pacs.002.001.10 — FIToFIPaymentStatusReport.
-        Maps XRPL transaction result codes to ISO 20022 status:
-          tesSUCCESS -> ACSC (AcceptedSettlementCompleted)
-          tec*       -> RJCT (Rejected) with proprietary reason
-          other      -> PDNG (Pending)
-        """
+        # Map XRPL result to ISO status
+        if xrpl_result_code == "tesSUCCESS":
+            tx_status = "ACSC"
+        elif xrpl_result_code.startswith("tec"):
+            tx_status = "RJCT"
+        else:
+            tx_status = "PDNG"
+
         root = etree.Element(
             "Document",
-            nsmap={None: "urn:iso:std:iso:20022:tech:xsd:pacs.002.001.10"}
+            nsmap={None: "urn:iso:std:iso:20022:tech:xsd:pacs.002.001.10"},
         )
 
-        fi_pmt_sts_rpt = etree.SubElement(root, "FIToFIPmtStsRpt")
+        fi_to_fi = etree.SubElement(root, "FIToFIPmtStsRpt")
 
-        grp_hdr = etree.SubElement(fi_pmt_sts_rpt, "GrpHdr")
+        # Group Header
+        grp_hdr = etree.SubElement(fi_to_fi, "GrpHdr")
         msg_id = etree.SubElement(grp_hdr, "MsgId")
-        msg_id.text = (
-            f"STS-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
-            f"-{uuid.uuid4().hex[:8].upper()}"
-        )
+        msg_id.text = f"STS-{self.format_datetime()}-{payment_data.get('uetr', '')[:8]}"
         cre_dt_tm = etree.SubElement(grp_hdr, "CreDtTm")
         cre_dt_tm.text = self.format_datetime()
 
-        # Determine status
-        if xrpl_result_code == "tesSUCCESS":
-            tx_sts = "ACSC"
-        elif xrpl_result_code and xrpl_result_code.startswith("tec"):
-            tx_sts = "RJCT"
-        else:
-            tx_sts = "PDNG"
+        # Transaction Info and Status
+        tx_inf = etree.SubElement(fi_to_fi, "TxInfAndSts")
 
-        tx_inf = etree.SubElement(fi_pmt_sts_rpt, "TxInfAndSts")
+        orig_refs = etree.SubElement(tx_inf, "OrgnlGrpInf")
+        orig_msg_id = etree.SubElement(orig_refs, "OrgnlMsgId")
+        orig_msg_id.text = payment_data.get("uetr")
+        orig_msg_nm = etree.SubElement(orig_refs, "OrgnlMsgNmId")
+        orig_msg_nm.text = "pacs.008.001.08"
 
-        orgnl_e2e = etree.SubElement(tx_inf, "OrgnlEndToEndId")
-        orgnl_e2e.text = payment_data.get('end_to_end_id', 'NOTPROVIDED')
+        orig_e2e = etree.SubElement(tx_inf, "OrgnlEndToEndId")
+        orig_e2e.text = payment_data.get("end_to_end_id", "NOTPROVIDED")
 
-        orgnl_uetr = etree.SubElement(tx_inf, "OrgnlUETR")
-        orgnl_uetr.text = payment_data.get('uetr', '')
+        orig_uetr = etree.SubElement(tx_inf, "OrgnlUETR")
+        orig_uetr.text = payment_data.get("uetr")
 
-        sts_el = etree.SubElement(tx_inf, "TxSts")
-        sts_el.text = tx_sts
+        tx_sts = etree.SubElement(tx_inf, "TxSts")
+        tx_sts.text = tx_status
 
-        if tx_sts == "RJCT":
-            sts_rsn_inf = etree.SubElement(tx_inf, "StsRsnInf")
-            rsn = etree.SubElement(sts_rsn_inf, "Rsn")
+        # Rejection reason (only for RJCT)
+        if tx_status == "RJCT":
+            sts_rsn = etree.SubElement(tx_inf, "StsRsnInf")
+            rsn = etree.SubElement(sts_rsn, "Rsn")
             prtry = etree.SubElement(rsn, "Prtry")
             prtry.text = xrpl_result_code
+            rejection_reason = payment_data.get("rejection_reason")
+            if rejection_reason:
+                addtl_inf = etree.SubElement(sts_rsn, "AddtlInf")
+                addtl_inf.text = rejection_reason
+
+        # Supplementary Data — XRPL hash + escrow fulfillment if applicable
+        spl_data = etree.SubElement(tx_inf, "SplmtryData")
+        envlp = etree.SubElement(spl_data, "Envlp")
+
+        xrpl_hash_el = etree.SubElement(envlp, "XRPLTxHash")
+        xrpl_hash_el.text = payment_data.get("xrpl_tx_hash", "")
+
+        if escrow_fulfillment and tx_status == "ACSC":
+            # The fulfillment is the cryptographic release key for the XRPL escrow.
+            # Whoever holds this pacs.002 message can call EscrowFinish on the ledger.
+            # This demonstrates ISO 20022 messaging driving on-chain settlement.
+            ff_el = etree.SubElement(envlp, "EscrowFulfillment")
+            ff_el.text = escrow_fulfillment
+            note_el = etree.SubElement(envlp, "EscrowReleaseNote")
+            note_el.text = "PREIMAGE-SHA-256 fulfillment - releases XRPL escrow via EscrowFinish"
 
         return etree.tostring(
             root,
             pretty_print=True,
             xml_declaration=True,
-            encoding='UTF-8'
-        ).decode('utf-8')
+            encoding="UTF-8",
+        ).decode("utf-8")

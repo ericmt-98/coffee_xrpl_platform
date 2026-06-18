@@ -17,6 +17,7 @@ from xrpl.utils import xrp_to_drops, drops_to_xrp
 from xrpl.account import get_balance
 from xrpl.core.addresscodec import is_valid_classic_address
 from decimal import Decimal
+from datetime import datetime
 
 # XRPL Testnet endpoint
 TESTNET_URL = "https://s.altnet.rippletest.net:51234"
@@ -39,16 +40,12 @@ class XRPLClient:
         self.client = JsonRpcClient(TESTNET_URL)
     
     def validate_address(self, address: str) -> bool:
-        """
-        Validate an XRPL address format.
-
-        Args:
-            address: XRPL address to validate
-
-        Returns:
-            True if valid format
-        """
-        return validate_xrpl_address(address)
+        """Cryptographically validate an XRPL classic address (base58 + checksum)."""
+        try:
+            from xrpl.core.addresscodec import is_valid_classic_address
+            return is_valid_classic_address(address)
+        except Exception:
+            return False
     
     def get_wallet_from_seed(self, seed: str) -> Wallet:
         """
@@ -178,6 +175,127 @@ class XRPLClient:
         except Exception as e:
             raise Exception(f"Verification failed: {str(e)}")
     
+    def create_escrow(
+        self,
+        sender_seed: str,
+        destination: str,
+        amount_xrp: float,
+        condition_hex: str,
+        cancel_after_dt: datetime,
+        memo: str = None
+    ) -> dict:
+        """Create a conditional XRPL escrow (XRP only).
+        Funds are locked until EscrowFinish (with fulfillment) or EscrowCancel (after cancel_after).
+        Only classic XRPL EscrowCreate is supported — token escrow (XLS-85) is out of scope.
+
+        Returns {'hash', 'offer_sequence', 'validated', 'result'}
+        offer_sequence is required for EscrowFinish/EscrowCancel.
+        """
+        try:
+            from xrpl.models.transactions import EscrowCreate, Memo
+            from xrpl.utils import datetime_to_ripple_time
+
+            wallet = self.get_wallet_from_seed(sender_seed)
+            amount_drops = xrp_to_drops(Decimal(str(amount_xrp)))
+            cancel_after_ripple = datetime_to_ripple_time(cancel_after_dt)
+
+            memos = None
+            if memo:
+                memos = [Memo(memo_data=memo.encode().hex())]
+
+            tx = EscrowCreate(
+                account=wallet.address,
+                destination=destination,
+                amount=amount_drops,
+                condition=condition_hex,
+                cancel_after=cancel_after_ripple,
+                memos=memos,
+            )
+
+            response = submit_and_wait(tx, self.client, wallet)
+
+            # offer_sequence is the Sequence of the EscrowCreate tx itself
+            offer_sequence = response.result.get("Sequence") or response.result.get("tx_json", {}).get("Sequence")
+
+            return {
+                "hash": response.result.get("hash"),
+                "offer_sequence": offer_sequence,
+                "validated": response.is_successful(),
+                "result": response.result.get("meta", {}).get("TransactionResult"),
+            }
+        except Exception as e:
+            raise Exception(f"EscrowCreate failed: {str(e)}")
+
+    def finish_escrow(
+        self,
+        sender_seed: str,
+        owner_address: str,
+        offer_sequence: int,
+        condition_hex: str,
+        fulfillment_hex: str,
+    ) -> dict:
+        """Release a conditional escrow by providing the fulfillment preimage.
+        Can be called by anyone — funds always go to the original escrow destination.
+        Fee is auto-calculated (scales with fulfillment size).
+
+        Returns {'hash', 'validated', 'result'}
+        """
+        try:
+            from xrpl.models.transactions import EscrowFinish
+
+            wallet = self.get_wallet_from_seed(sender_seed)
+
+            tx = EscrowFinish(
+                account=wallet.address,
+                owner=owner_address,
+                offer_sequence=offer_sequence,
+                condition=condition_hex,
+                fulfillment=fulfillment_hex,
+            )
+
+            response = submit_and_wait(tx, self.client, wallet)
+
+            return {
+                "hash": response.result.get("hash"),
+                "validated": response.is_successful(),
+                "result": response.result.get("meta", {}).get("TransactionResult"),
+            }
+        except Exception as e:
+            raise Exception(f"EscrowFinish failed: {str(e)}")
+
+    def cancel_escrow(
+        self,
+        sender_seed: str,
+        owner_address: str,
+        offer_sequence: int,
+    ) -> dict:
+        """Cancel an expired escrow and return funds to the creator.
+        IMPORTANT: EscrowCancel is only valid AFTER the CancelAfter time has passed.
+        Calling before expiry will fail with tecNO_PERMISSION.
+
+        Returns {'hash', 'validated', 'result'}
+        """
+        try:
+            from xrpl.models.transactions import EscrowCancel
+
+            wallet = self.get_wallet_from_seed(sender_seed)
+
+            tx = EscrowCancel(
+                account=wallet.address,
+                owner=owner_address,
+                offer_sequence=offer_sequence,
+            )
+
+            response = submit_and_wait(tx, self.client, wallet)
+
+            return {
+                "hash": response.result.get("hash"),
+                "validated": response.is_successful(),
+                "result": response.result.get("meta", {}).get("TransactionResult"),
+            }
+        except Exception as e:
+            raise Exception(f"EscrowCancel failed: {str(e)}")
+
     def get_testnet_explorer_url(self, tx_hash: str) -> str:
         """
         Get the Testnet explorer URL for a transaction.

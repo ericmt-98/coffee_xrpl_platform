@@ -7,6 +7,7 @@ Security utilities for password hashing and data encryption
 
 import os
 import base64
+import hashlib
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
 from cryptography.fernet import Fernet
@@ -146,12 +147,31 @@ def get_or_create_encryption_key() -> bytes:
 
 
 def validate_xrpl_seed(seed: str) -> bool:
-    """Validate XRPL seed using cryptographic decode."""
-    if not seed:
-        return False
+    """Cryptographically validate an XRPL seed by attempting wallet derivation."""
     try:
-        from xrpl.core.keypairs import derive_keypair
-        derive_keypair(seed)
+        from xrpl.wallet import Wallet
+        Wallet.from_seed(seed)
         return True
     except Exception:
         return False
+
+
+def generate_escrow_condition() -> tuple[str, str]:
+    """Generate a PREIMAGE-SHA-256 crypto-condition pair for XRPL escrow.
+
+    Returns (condition_hex, fulfillment_hex). Uses 32 random bytes as preimage.
+    Manual DER encoding — no external cryptoconditions library needed.
+
+    DER layout (fixed for 32-byte preimage):
+      condition   = A0 25 80 20 <sha256(preimage)> 81 01 20  (39 bytes)
+      fulfillment = A0 22 80 20 <preimage>                   (36 bytes: 4 header + 32 preimage)
+
+    The fulfillment is the release key: whoever holds it can call EscrowFinish.
+    In this platform, it travels inside the pacs.002 ACSC message (ISO 20022
+    Payment Status Report), making the banking message the literal unlock key.
+    Only XRP escrow is supported (classic XRPL EscrowCreate).
+    """
+    preimage    = os.urandom(32)
+    condition   = bytes.fromhex("A0258020") + hashlib.sha256(preimage).digest() + bytes.fromhex("810120")
+    fulfillment = bytes.fromhex("A0228020") + preimage
+    return condition.hex().upper(), fulfillment.hex().upper()

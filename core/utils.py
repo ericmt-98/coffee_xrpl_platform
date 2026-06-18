@@ -102,12 +102,28 @@ def truncate_text(text: str, max_length: int = 50) -> str:
 def calculate_payment_total(weight_kg: float, price_per_kg: float) -> float:
     """
     Calculate total payment amount.
-    
+
     Args:
         weight_kg: Weight in kilograms
         price_per_kg: Price per kilogram
-        
+
     Returns:
         Total amount
     """
     return round(weight_kg * price_per_kg, 2)
+
+
+def log_audit(session, user_id, action: str, details: str = None) -> None:
+    """Add an AuditLog entry to an open session. Caller is responsible for commit.
+    Does not open or close the session — add this before your existing session.commit().
+    """
+    from core.models import AuditLog
+    from datetime import datetime, timezone
+
+    entry = AuditLog(
+        user_id=user_id,
+        action=action,
+        details=details,
+        timestamp=datetime.now(timezone.utc),
+    )
+    session.add(entry)
